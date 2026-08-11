@@ -7,6 +7,7 @@
  * 2023-07-17, Create file. \n
  */
 #include "sle_measure_dis_server.h"
+#include <stdio.h>
 #include "sle_errcode.h"
 #include "sle_common.h"
 #include "sle_device_manager.h"
@@ -24,6 +25,16 @@
 #define SLEM_IQ_DATALEN 512
 
 static uint8_t g_stack_enable_status = 0;
+
+static void imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
+{
+    uint32_t scale = (decimals == 6U) ? 1000000U : 1000U;
+    int64_t scaled = (int64_t)(value * (float)scale + ((value >= 0.0f) ? 0.5f : -0.5f));
+    uint64_t magnitude = (scaled < 0) ? (uint64_t)(-scaled) : (uint64_t)scaled;
+    (void)snprintf(out, out_len, "%s%llu.%0*llu", (scaled < 0) ? "-" : "",
+        (unsigned long long)(magnitude / scale), (int)decimals,
+        (unsigned long long)(magnitude % scale));
+}
 
 /* sle server handle */
 static uint8_t g_server_id = 0;
@@ -142,15 +153,69 @@ static void measure_dis_ssaps_read_request_cbk(uint8_t server_id, uint16_t conn_
 
 void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
 {
-    unused(data_len);
     uint32_t ret = ERRCODE_SLE_FAIL;
+    if ((data == NULL) || (data_len < sizeof(measure_ids_msg_t))) {
+        return;
+    }
     measure_ids_msg_t *slem_profile_msg = (measure_ids_msg_t *)(data);
+    if (slem_profile_msg->len > (uint32_t)(data_len - sizeof(measure_ids_msg_t))) {
+        osal_printk("invalid SLE message length\r\n");
+        return;
+    }
 
     switch (slem_profile_msg->type) {
         case SLEM_PROFILE_MSG_IQ:
-            osal_printk("enter handle recv remote iq\r\n");
             ret = measure_dis_remote_iq(slem_profile_msg->len, slem_profile_msg->data);
             break;
+        case SLEM_PROFILE_MSG_IMU: {
+            if (slem_profile_msg->len != sizeof(sle_imu_packet_t)) {
+                osal_printk("invalid IMU packet length:%u\r\n", slem_profile_msg->len);
+                break;
+            }
+            sle_imu_packet_t *packet = (sle_imu_packet_t *)osal_kmalloc(sizeof(sle_imu_packet_t), 0);
+            if (packet == NULL) {
+                ret = ERRCODE_MALLOC;
+                break;
+            }
+            if (memcpy_s(packet, sizeof(*packet), slem_profile_msg->data, sizeof(*packet)) != EOK) {
+                osal_kfree(packet);
+                ret = ERRCODE_MEMCPY;
+                break;
+            }
+            measure_dis_msg_node_t node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IMU, 0, packet};
+            ret = sle_measure_dis_msg_add(&node);
+            if (ret != ERRCODE_SUCC) {
+                osal_kfree(packet);
+            }
+            break;
+        }
+        case SLEM_PROFILE_MSG_IMU_BATCH: {
+            if (slem_profile_msg->len != sizeof(sle_imu_batch_t)) {
+                osal_printk("invalid IMU batch length:%u\r\n", slem_profile_msg->len);
+                break;
+            }
+            const sle_imu_batch_t *batch = (const sle_imu_batch_t *)slem_profile_msg->data;
+            if ((batch->sample_count == 0U) || (batch->sample_count > SLE_IMU_BATCH_SAMPLES)) {
+                osal_printk("invalid IMU batch count:%u\r\n", batch->sample_count);
+                break;
+            }
+            sle_imu_batch_t *batch_copy = (sle_imu_batch_t *)osal_kmalloc(sizeof(*batch_copy), 0);
+            if (batch_copy == NULL) {
+                ret = ERRCODE_MALLOC;
+                break;
+            }
+            if (memcpy_s(batch_copy, sizeof(*batch_copy), batch, sizeof(*batch_copy)) != EOK) {
+                osal_kfree(batch_copy);
+                ret = ERRCODE_MEMCPY;
+                break;
+            }
+            measure_dis_msg_node_t node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IMU_BATCH, 0, batch_copy};
+            ret = sle_measure_dis_msg_add(&node);
+            if (ret != ERRCODE_SUCC) {
+                osal_kfree(batch_copy);
+            }
+            break;
+        }
         default:
             for (int i = 0; i < data_len; i++) {
                 osal_printk("[%d]:%d\r\n", i, data[i]);
@@ -163,13 +228,40 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
     }
 }
 
+void measure_dis_server_output_imu(const sle_imu_packet_t *p)
+{
+    if (p == NULL) {
+        return;
+    }
+    char line[384];
+    char v[17][24];
+    imu_float_text(v[0], sizeof(v[0]), p->roll, 3); imu_float_text(v[1], sizeof(v[1]), p->pitch, 3);
+    imu_float_text(v[2], sizeof(v[2]), p->yaw, 3); imu_float_text(v[3], sizeof(v[3]), p->ax, 6);
+    imu_float_text(v[4], sizeof(v[4]), p->ay, 6); imu_float_text(v[5], sizeof(v[5]), p->az, 6);
+    imu_float_text(v[6], sizeof(v[6]), p->gx, 3); imu_float_text(v[7], sizeof(v[7]), p->gy, 3);
+    imu_float_text(v[8], sizeof(v[8]), p->gz, 3); imu_float_text(v[9], sizeof(v[9]), p->mx, 3);
+    imu_float_text(v[10], sizeof(v[10]), p->my, 3); imu_float_text(v[11], sizeof(v[11]), p->mz, 3);
+    imu_float_text(v[12], sizeof(v[12]), p->q0, 6); imu_float_text(v[13], sizeof(v[13]), p->q1, 6);
+    imu_float_text(v[14], sizeof(v[14]), p->q2, 6); imu_float_text(v[15], sizeof(v[15]), p->q3, 6);
+    imu_float_text(v[16], sizeof(v[16]), p->temp, 3);
+    int n = snprintf(line, sizeof(line),
+        "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
+        (unsigned long long)p->timestamp_us, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+        v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], v[16]);
+    if ((n > 0) && ((size_t)n < sizeof(line))) {
+        osal_printk("%s", line);
+    }
+}
+
 static void measure_dis_ssaps_write_request_cbk(uint8_t server_id, uint16_t conn_id,
     ssaps_req_write_cb_t *write_cb_para, errcode_t status)
 {
     unused(server_id);
     unused(conn_id);
     unused(status);
-    osal_printk("server recv msg length:0x%x status:0x%x \r\n", write_cb_para->length, status);
+    if ((write_cb_para == NULL) || (write_cb_para->value == NULL)) {
+        return;
+    }
     measure_dis_server_msg_proc(write_cb_para->value, write_cb_para->length);
 }
 
@@ -361,18 +453,16 @@ int measure_dis_server_write_client(uint32_t type, uint8_t *data, uint32_t data_
 
 void sle_measure_dis_msg_proc(void)
 {
-    measure_dis_msg_node_t *msg_node = NULL;
-    uint32_t msg_data_size = sizeof(measure_dis_msg_node_t);
-    errcode_t ret = ERRCODE_SUCC;
-    ret = osal_msg_queue_read_copy(g_measure_dis_queue, &g_msg_data, &msg_data_size, 0);
-    if (ret != ERRCODE_SUCC) {
-        osal_printk("not find msg node \r\n");
-        return;
-    }
-    msg_node = &g_msg_data;
-    ret = measure_dis_match_msg(msg_node);
-    if (ret != ERRCODE_SUCC) {
-        osal_printk("MSG PROC ERROR type:%d \r\n", msg_node->type);
+    while (osal_msg_queue_get_msg_num(g_measure_dis_queue) > 0U) {
+        uint32_t msg_data_size = sizeof(measure_dis_msg_node_t);
+        errcode_t ret = osal_msg_queue_read_copy(g_measure_dis_queue, &g_msg_data, &msg_data_size, 0);
+        if (ret != ERRCODE_SUCC) {
+            return;
+        }
+        ret = measure_dis_match_msg(&g_msg_data);
+        if (ret != ERRCODE_SUCC) {
+            osal_printk("MSG PROC ERROR type:%d \r\n", g_msg_data.type);
+        }
     }
 }
 

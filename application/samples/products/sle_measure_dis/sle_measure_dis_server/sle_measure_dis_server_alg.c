@@ -21,6 +21,9 @@
 
 uint8_t g_iq_debug_flag = 0;
 uint32_t counter = 0;
+static uint32_t g_last_distance_calc_ms;
+
+#define MEASURE_DIS_CALC_MIN_INTERVAL_MS 400U
 
 measure_dis_stored_iq_data_t g_md_local_iq_data;
 uint8_t g_md_store_local_iq_complete;
@@ -38,10 +41,13 @@ void measure_dis_print_cal_dis(float dist_first, float dist_ori, float prob, uin
 {
     unused(dist_ori);
     unused(prob);
+    int32_t distance_mm = (int32_t)(dist_first * MEASURE_DIS_NUM_CARRY_1000 +
+        ((dist_first >= 0.0f) ? 0.5f : -0.5f));
+    uint32_t magnitude_mm = (distance_mm < 0) ? (uint32_t)(-distance_mm) : (uint32_t)distance_mm;
     osal_printk(
-        "SLEM get distance done. distance:%d.%03d, time = %d ms. \r\n",
-        (int32_t)(dist_first), ((uint32_t)(dist_first * MEASURE_DIS_NUM_CARRY_1000) % MEASURE_DIS_NUM_CARRY_1000),
-        (uint32_t)(time));
+        "DIST,%llu,%s%u.%03u,%u\r\n",
+        (unsigned long long)uapi_tcxo_get_us(), (distance_mm < 0) ? "-" : "",
+        magnitude_mm / MEASURE_DIS_NUM_CARRY_1000, magnitude_mm % MEASURE_DIS_NUM_CARRY_1000, time);
 }
 
 static void measure_dis_posalg_set_distance(slem_smoothed_dis_result *dis,
@@ -66,38 +72,37 @@ void measure_dis_posalg_set_base_para(slem_alg_para_dis *alg_para)
 void measure_dis_posalg_get_distance(measure_dis_profile_msg_dis_t *measure_dis_temp,
                                      sle_channel_sounding_iq_trans_t *remote_iq_data)
 {
-    slem_alg_para_dis *alg_para = (slem_alg_para_dis *)osal_kmalloc(sizeof(slem_alg_para_dis), 0);
+    slem_alg_para_dis alg_para = {0};
 
-    slem_posalg_set_base_para(alg_para, 0);
-    alg_para->rssi_rtd = g_md_local_iq_data.rssi;
-    alg_para->rssi_dut = remote_iq_data[0].rssi;
+    slem_posalg_set_base_para(&alg_para, 0);
+    alg_para.rssi_rtd = g_md_local_iq_data.rssi;
+    alg_para.rssi_dut = remote_iq_data[0].rssi;
 #if (defined(GLE_CS_MODE3_SUPPORT))
-    alg_para->tof_rtd = g_md_local_iq_data.tof_result;
-    alg_para->tof_dut = remote_iq_data[0].tof_result;
+    alg_para.tof_rtd = g_md_local_iq_data.tof_result;
+    alg_para.tof_dut = remote_iq_data[0].tof_result;
 #endif
-    alg_para->iq_rtd = (slem_alg_iq *)&(g_md_local_iq_data.data[0]);
-    alg_para->iq_dut = (slem_alg_iq *)&(remote_iq_data[0].data[0]);
+    alg_para.iq_rtd = (slem_alg_iq *)&(g_md_local_iq_data.data[0]);
+    alg_para.iq_dut = (slem_alg_iq *)&(remote_iq_data[0].data[0]);
     g_md_store_local_iq_complete = false;
 
     slem_para_pair para_limit = {.rssi_limit = DIS_ALG_RSSI_LIMIT,
                                  .threshold_cond2 = DIS_ALG_THRESHOULD_COND2,
                                  .r_start = DIS_ALG_R_START};
-    alg_para->para_limit = para_limit;
-    alg_para->key_id = 0;
+    alg_para.para_limit = para_limit;
+    alg_para.key_id = 0;
     /* remote iq 是 dut， local iq 是 rtd */
     uint32_t time_start = (uint32_t)uapi_tcxo_get_ms();
 
-    alg_para->cur_count = counter;
-    alg_para->cur_time = time_start;
+    alg_para.cur_count = counter;
+    alg_para.cur_time = time_start;
     slem_smoothed_dis_result result_dist;
-    slem_alg_calc_smoothed_dis(&result_dist, alg_para);
+    slem_alg_calc_smoothed_dis(&result_dist, &alg_para);
     counter++;
     uint32_t time_end = (uint32_t)uapi_tcxo_get_ms();
     measure_dis_print_cal_dis(result_dist.dis_smoothed, result_dist.dis_ori,
                               result_dist.prob, time_end - time_start);
 
     measure_dis_posalg_set_distance(&result_dist, measure_dis_temp);
-    osal_kfree(alg_para);
 }
 
 void measure_dis_print_iq_data(uint8_t num, uint8_t role, sle_channel_sounding_iq_trans_t *report)
@@ -158,9 +163,6 @@ errcode_t measure_dis_store_local_iq(sle_channel_sounding_iq_report_t *report)
 errcode_t measure_dis_proc_local_iq(uint16_t conn_id, sle_channel_sounding_iq_report_t *report)
 {
     unused(conn_id);
-    if (report->report_idx == 0) {
-        osal_printk("RECEIVE LOCAL IQ. timestamp_sn:%d \r\n",  report->timestamp_sn);
-    }
     errcode_t ret = ERRCODE_SUCC;
 
     ret = measure_dis_store_local_iq(report);
@@ -170,7 +172,6 @@ errcode_t measure_dis_proc_local_iq(uint16_t conn_id, sle_channel_sounding_iq_re
 
     if (report->report_idx + 1 == MEASURE_DIS_IQ_REPORT_CNT_MAX) {
         g_md_store_local_iq_complete = true;
-        osal_printk("store local iq data commplete . \r\n");
         /* 如果是钥匙则发送给从锚点 */
         measure_dis_print_iq_data(0, 0, (sle_channel_sounding_iq_trans_t *)(&g_md_local_iq_data));
     }
@@ -181,6 +182,7 @@ errcode_t measure_dis_proc_remote_iq(uint16_t conn_id, sle_channel_sounding_iq_t
 {
     unused(conn_id);
     uint8_t num = 0; /* SLAVE只有一路MEASURE_DIS业务 */
+    unused(num);
     measure_dis_print_iq_data(0, 1, report);
     if (abs((int32_t)(g_md_local_iq_data.timestamp_sn - report->timestamp_sn)) >= MEASURE_DIS_TIMESTAMP_DIFF_MAX) {
         osal_printk("local:%d, remote:%d. \r\n",
@@ -188,13 +190,15 @@ errcode_t measure_dis_proc_remote_iq(uint16_t conn_id, sle_channel_sounding_iq_t
         return ERRCODE_INVALID_PARAM;
     }
 
-    osal_printk("local ts = %d, remote ts = %d.  num[%d], local commplete status:%d.\r\n",
-                g_md_local_iq_data.timestamp_sn, report->timestamp_sn, num, g_md_store_local_iq_complete);
-
     if (g_md_store_local_iq_complete) {
-        g_md_store_local_iq_complete = false;
-        measure_dis_profile_msg_dis_t measure_dis_dis_temp = { report->timestamp_sn, 0, 0, 0, 0, 0, 0, 0};
-        measure_dis_posalg_get_distance(&measure_dis_dis_temp, (sle_channel_sounding_iq_trans_t *)report);
+        uint32_t now_ms = (uint32_t)uapi_tcxo_get_ms();
+        if ((g_last_distance_calc_ms == 0U) ||
+            ((uint32_t)(now_ms - g_last_distance_calc_ms) >= MEASURE_DIS_CALC_MIN_INTERVAL_MS)) {
+            g_md_store_local_iq_complete = false;
+            g_last_distance_calc_ms = now_ms;
+            measure_dis_profile_msg_dis_t measure_dis_dis_temp = { report->timestamp_sn, 0, 0, 0, 0, 0, 0, 0};
+            measure_dis_posalg_get_distance(&measure_dis_dis_temp, (sle_channel_sounding_iq_trans_t *)report);
+        }
     }
 
     return ERRCODE_SUCC;
@@ -265,23 +269,19 @@ errcode_t measure_dis_recv_local_iq(measure_dis_msg_node_t *msg_node)
     /* key send to anchor */
     errcode_t ret = measure_dis_proc_local_iq(msg_node->conn_id, (sle_channel_sounding_iq_report_t *)(msg_node->data));
     osal_kfree(msg_node->data);
-    osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT);
     return ret;
 }
 
 errcode_t measure_dis_recv_remote_iq(measure_dis_msg_node_t *msg_node)
 {
-    osal_printk("slem recv remote iq.\n");
     errcode_t ret = measure_dis_proc_remote_iq(msg_node->conn_id, (sle_channel_sounding_iq_trans_t *)(msg_node->data));
     osal_kfree(msg_node->data);
-    osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT);
     return ret;
 }
 
 errcode_t measure_dis_match_msg(measure_dis_msg_node_t *msg_node)
 {
     errcode_t ret = ERRCODE_FAIL;
-    osal_printk("---enter sle_slem_msg_proc, type:%d---\n", msg_node->type);
     switch (msg_node->type) {
         case SLEM_MSG_LOCAL_IQ:
             ret = measure_dis_recv_local_iq(msg_node);
@@ -289,6 +289,23 @@ errcode_t measure_dis_match_msg(measure_dis_msg_node_t *msg_node)
         case SLEM_MSG_REMOTE_IQ:
             ret = measure_dis_recv_remote_iq(msg_node);
             break;
+        case SLEM_MSG_REMOTE_IMU:
+            measure_dis_server_output_imu((const sle_imu_packet_t *)msg_node->data);
+            osal_kfree(msg_node->data);
+            ret = ERRCODE_SUCC;
+            break;
+        case SLEM_MSG_REMOTE_IMU_BATCH: {
+            const sle_imu_batch_t *batch = (const sle_imu_batch_t *)msg_node->data;
+            for (uint16_t i = 0; i < batch->sample_count; i++) {
+                measure_dis_server_output_imu(&batch->samples[i]);
+            }
+            if (batch->dropped_samples != 0U) {
+                osal_printk("IMU_DROP,%u,%u\r\n", batch->sequence, batch->dropped_samples);
+            }
+            osal_kfree(msg_node->data);
+            ret = ERRCODE_SUCC;
+            break;
+        }
         default:
             break;
     }
@@ -308,7 +325,6 @@ errcode_t measure_dis_remote_iq(uint16_t len, uint8_t *value)
         osal_kfree(report);
         return ERRCODE_MEMCPY;
     }
-    osal_printk("RECEIVE REMOTE IQ. timestamp_sn:%d \r\n", report->timestamp_sn);
     measure_dis_msg_node_t msg_node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IQ, 0, report};
     ret = sle_measure_dis_msg_add(&msg_node);
     if (ret != ERRCODE_SUCC) {

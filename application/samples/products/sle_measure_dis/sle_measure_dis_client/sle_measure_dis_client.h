@@ -10,12 +10,14 @@
 #define SLE_MEASURE_DIS_CLIENT_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <securec.h>
 #include "errcode.h"
 #include "std_def.h"
 #include "soc_osal.h"
 #include "common_def.h"
 #include "sle_ssap_client.h"
+#include "../app_imu_protocol.h"
 
 #define MEASURE_DIS_NUM_CARRY_10_7     10000000
 #define MEASURE_DIS_NUM_CARRY_1000     1000
@@ -51,8 +53,14 @@ typedef struct server_data {
         }                                                                                        \
     } while (0)
 
-int measure_dis_client_write_server(uint32_t type, uint8_t *data, uint32_t data_len);
+int measure_dis_client_send_now(uint32_t type, const uint8_t *data, uint32_t data_len);
+errcode_t sle_imu_tx_enqueue_iq(const uint8_t *data, uint32_t data_len);
 int measure_dis_client_init(void);
 int measure_dis_start_scan(void);
+void measure_dis_client_process(void);
+bool measure_dis_client_is_ready(void);
+extern uint8_t g_measure_dis_conn_id;
+extern measure_dis_server_data_t g_measure_dis_server_data;
+void sle_imu_client_start(void);
 
 #endif

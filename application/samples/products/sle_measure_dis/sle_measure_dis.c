@@ -43,12 +43,19 @@ void sle_measure_dis_client_task(void)
     uint32_t ret;
     ret = measure_dis_client_init();
     check_rc_return_rc(ret, "con sle_measure_dis_client_init");
+    if (ret == ERRCODE_SUCC) {
+        sle_imu_client_start();
+    }
+    while (1) {
+        measure_dis_client_process();
+        osal_msleep(20);
+    }
 }
 #endif
 
 static void measure_dis_entry(void)
 {
-    osal_printk("CARKEY VERSION 2024.3.21 8:00.\r\n");
+    osal_printk("IMU_RANGE_BUILD 2026-08-11-v11-20hz-batch4\r\n");
     osal_task *task_handle = NULL;
     osal_kthread_lock();
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)

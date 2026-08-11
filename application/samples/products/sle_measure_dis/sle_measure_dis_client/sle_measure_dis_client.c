@@ -24,10 +24,17 @@ uint8_t iq_msg_buff[sizeof(measure_ids_msg_t) + sizeof(measure_dis_stored_iq_dat
 #define ADV_TO_SERVER 2
 /* UUID只支持2字节和16字节 */
 #define SLEM_UUID_LEN SLE_UUID_LEN
-#define KEY_CONNECT_DELAY_TIME 500
+#define KEY_CONNECT_DELAY_TIME 100
+#define CLIENT_SETUP_START_DELAY_MS 100
 #define SLEM_IQ_DATALEN 512
 
 static uint8_t g_stack_enable_status = 0;
+static volatile uint8_t g_measure_dis_setup_state;
+
+#define MEASURE_DIS_SETUP_IDLE 0U
+#define MEASURE_DIS_SETUP_PENDING 1U
+#define MEASURE_DIS_SETUP_RUNNING 2U
+#define MEASURE_DIS_SETUP_DONE 3U
 
 uint8_t g_measure_dis_server_addr[SLE_ADDR_LEN] = { 1, 1, 1, 1, 1, 1 };
 uint8_t g_measure_dis_client_addr[SLE_ADDR_LEN] = { 2, 2, 2, 2, 2, 2 };
@@ -54,7 +61,7 @@ errcode_t measure_dis_slem_set_param(uint16_t conn_id)
         osal_printk("slem set param failed, ret = %d.\n", ret);
     }
     osal_printk("slem set param finish. refresh_rate:%d \n", param.refresh_rate);
-    return ERRCODE_SUCC;
+    return ret;
 }
 
 errcode_t measure_dis_slem_set_enable(uint16_t conn_id)
@@ -65,7 +72,7 @@ errcode_t measure_dis_slem_set_enable(uint16_t conn_id)
     if ((ret != ERRCODE_SUCC) || (conn_id == SLEM_CONNET_INVAILD)) {
         osal_printk("slem set enable failed, ret = %d.\n", ret);
     }
-    return ERRCODE_SUCC;
+    return ret;
 }
 
 static int measure_dis_client_discover_key(uint8_t type)
@@ -105,27 +112,67 @@ static void measure_dis_cm_conn_state_cbk(uint16_t conn_id, const sle_addr_t *ad
     if (conn_state == SLE_ACB_STATE_CONNECTED) {
         osal_printk("Connected. conn_id:%d\r\n", conn_id);
         g_measure_dis_conn_id = conn_id;
-        osal_msleep(MEASURE_DIS_NUM_CARRY_1000);
-        measure_dis_client_discover_key(SSAP_FIND_TYPE_PROPERTY);
-        ssap_exchange_info_t info = { 0 };
-        info.mtu_size = SLEM_IQ_DATALEN;
-        info.version = 1;
-        ssapc_exchange_info_req(0, conn_id, &info);
-
-        (void)osDelay(KEY_CONNECT_DELAY_TIME);
-        measure_dis_slem_set_param(conn_id);
-        (void)osDelay(KEY_CONNECT_DELAY_TIME);
-        measure_dis_slem_set_enable(conn_id);
+        g_measure_dis_server_data.property_handle = 0;
+        g_measure_dis_setup_state = MEASURE_DIS_SETUP_PENDING;
     } else if (conn_state == SLE_ACB_STATE_DISCONNECTED) {
         osal_printk("Disconnected disc_reason:0x%x .\r\n", disc_reason);
         g_measure_dis_conn_id = SLEM_CONNET_INVAILD;
+        g_measure_dis_server_data.property_handle = 0;
+        g_measure_dis_setup_state = MEASURE_DIS_SETUP_IDLE;
         measure_dis_start_scan();
     }
 }
 
+void measure_dis_client_process(void)
+{
+    if (g_measure_dis_setup_state != MEASURE_DIS_SETUP_PENDING) {
+        return;
+    }
+
+    uint8_t conn_id = g_measure_dis_conn_id;
+    g_measure_dis_setup_state = MEASURE_DIS_SETUP_RUNNING;
+    osal_printk("CLIENT connection setup begin, conn_id:%u\r\n", conn_id);
+
+    osal_msleep(CLIENT_SETUP_START_DELAY_MS);
+    if (g_measure_dis_conn_id != conn_id) {
+        return;
+    }
+
+    (void)measure_dis_client_discover_key(SSAP_FIND_TYPE_PROPERTY);
+    ssap_exchange_info_t info = { .mtu_size = SLEM_IQ_DATALEN, .version = 1 };
+    (void)ssapc_exchange_info_req(0, conn_id, &info);
+
+    osal_msleep(KEY_CONNECT_DELAY_TIME);
+    if (g_measure_dis_conn_id != conn_id) {
+        return;
+    }
+    errcode_t param_ret = measure_dis_slem_set_param(conn_id);
+
+    osal_msleep(KEY_CONNECT_DELAY_TIME);
+    if (g_measure_dis_conn_id != conn_id) {
+        return;
+    }
+    errcode_t enable_ret = measure_dis_slem_set_enable(conn_id);
+    if ((param_ret != ERRCODE_SUCC) || (enable_ret != ERRCODE_SUCC) ||
+        (g_measure_dis_server_data.property_handle == 0)) {
+        osal_printk("CLIENT connection setup incomplete, retry later.\r\n");
+        g_measure_dis_setup_state = MEASURE_DIS_SETUP_PENDING;
+        return;
+    }
+    g_measure_dis_setup_state = MEASURE_DIS_SETUP_DONE;
+    osal_printk("CLIENT connection setup done, conn_id:%u\r\n", conn_id);
+}
+
+bool measure_dis_client_is_ready(void)
+{
+    return (g_measure_dis_conn_id != SLEM_CONNET_INVAILD) &&
+        (g_measure_dis_server_data.property_handle != 0) &&
+        (g_measure_dis_setup_state == MEASURE_DIS_SETUP_DONE);
+}
+
 errcode_t measure_dis_cm_register_cbks(void)
 {
-    sle_connection_callbacks_t cm_cbks;
+    sle_connection_callbacks_t cm_cbks = {0};
     cm_cbks.connect_state_changed_cb = measure_dis_cm_conn_state_cbk;
     cm_cbks.connect_param_update_req_cb = NULL;
     cm_cbks.connect_param_update_cb = NULL;
@@ -186,6 +233,9 @@ errcode_t measure_dis_dd_register_cbks(void)
 STATIC void measure_dis_ssapc_find_structure_cbk(uint8_t client_id, uint16_t conn_id,
     ssapc_find_service_result_t *service, errcode_t status)
 {
+    if (service == NULL) {
+        return;
+    }
     osal_printk("[ssap client] find structure cbk client: %d conn_id:%d status: %d \n",
         client_id, conn_id, status);
     osal_printk("[ssap client] find structure cbk start_hdl: %d end_hdl:%d \n",
@@ -198,6 +248,9 @@ STATIC void measure_dis_ssapc_find_structure_cbk(uint8_t client_id, uint16_t con
 STATIC void measure_dis_ssapc_find_property_cbk(uint8_t client_id, uint16_t conn_id,
     ssapc_find_property_result_t *property, errcode_t status)
 {
+    if (property == NULL) {
+        return;
+    }
     osal_printk("[ssap client] find property cbk client: %d conn_id:%d status: %d \n",
         client_id, conn_id, status);
     osal_printk("[ssap client] find property cbk handle: %d \n", property->handle);
@@ -246,6 +299,9 @@ STATIC void measure_dis_ssapc_notification_cbk(uint8_t client_id, uint16_t conn_
 {
     unused(client_id);
     unused(status);
+    if ((data == NULL) || (data->data == NULL)) {
+        return;
+    }
     osal_printk("[ssap client] notification info cbk client handle:%d, conn_id:%x, data_len:%x\n",
         data->handle, conn_id, data->data_len);
 
@@ -276,7 +332,7 @@ STATIC void measure_dis_ssapc_exchange_info_cbk(uint8_t client_id, uint16_t conn
 
 errcode_t measure_dis_ssapc_register_cbks(void)
 {
-    ssapc_callbacks_t ssapc_cbks;
+    ssapc_callbacks_t ssapc_cbks = {0};
 
     osal_printk("[ssap client] client register cbk\r\n");
     /* 服务发现模块回调函数 */
@@ -340,11 +396,10 @@ static int measure_dis_client_write_proc(uint8_t type, uint16_t len, uint8_t *da
     return ret;
 }
 
-int measure_dis_client_write_server(uint32_t type, uint8_t *data, uint32_t data_len)
+int measure_dis_client_send_now(uint32_t type, const uint8_t *data, uint32_t data_len)
 {
     uint32_t ret = ERRCODE_SUCC;
     uint16_t len = sizeof(measure_ids_msg_t) + data_len;
-    osal_printk("client send to server, len:0x%x.\r\n", len);
     measure_ids_msg_t *slem_msg = (measure_ids_msg_t *)osal_kmalloc(len, 0);
     if (slem_msg == NULL) {
         return ERRCODE_MALLOC;

@@ -19,7 +19,6 @@ uint8_t g_next_idx;
 uint8_t g_store_local_iq_complete;
 
 uint8_t g_iq_debug_flag = 0;
-
 void measure_dis_print_iq_data(uint8_t num, uint8_t role, sle_channel_sounding_iq_trans_t *report)
 {
     if (!g_iq_debug_flag) {
@@ -64,8 +63,6 @@ errcode_t measure_dis_store_local_iq(sle_channel_sounding_iq_report_t *report)
         g_local_iq_data.data[offset + i].i_data = report->i_data[i];
         g_local_iq_data.data[offset + i].q_data = report->q_data[i];
     }
-    osal_printk("local iq es:%d, time_stamp:%d group:%d, num:%d \r\n",
-                report->es_sn, report->timestamp_sn, report->report_idx, 0);
     g_next_idx = report->report_idx + 1;
 
 #if (defined(GLE_CS_MODE3_SUPPORT))
@@ -89,8 +86,8 @@ errcode_t measure_dis_recv_local_iq(uint16_t conn_id, sle_channel_sounding_iq_re
     if (report->report_idx + 1 == MEASURE_DIS_IQ_REPORT_CNT_MAX) {
         /* 如果是钥匙则发送给从锚点 */
         measure_dis_print_iq_data(0, 0, (sle_channel_sounding_iq_trans_t *)(&g_local_iq_data));
-        measure_dis_client_write_server(SLEM_PROFILE_MSG_IQ,
-                                        (uint8_t *)&g_local_iq_data, sizeof(sle_channel_sounding_iq_trans_t));
+        (void)sle_imu_tx_enqueue_iq((const uint8_t *)&g_local_iq_data,
+                                    sizeof(sle_channel_sounding_iq_trans_t));
     }
     return ret;
 }
@@ -122,10 +119,7 @@ void measure_dis_cs_state_changed_cb(uint8_t slem_status, errcode_t status)
 
 void measure_dis_cs_iq_report_cb(uint16_t conn_id, sle_channel_sounding_iq_report_t *report)
 {
-    if (report->report_idx == 0) {
-        osal_printk("RECEIVE LOCAL IQ. timestamp_sn:%d \r\n",  report->timestamp_sn);
-    }
-    measure_dis_recv_local_iq(conn_id, report);
+    (void)measure_dis_recv_local_iq(conn_id, report);
 }
 
 errcode_t measure_dis_reg_callbacks(void)

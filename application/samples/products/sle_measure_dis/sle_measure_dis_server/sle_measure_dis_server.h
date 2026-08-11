@@ -17,6 +17,7 @@
 #include "soc_osal.h"
 #include "common_def.h"
 #include "sle_ssap_server.h"
+#include "../app_imu_protocol.h"
 
 #ifdef __cplusplus
 #if __cplusplus
@@ -31,7 +32,7 @@ extern "C" {
 #define MEASURE_DIS_NUM_CARRY_2        2
 
 #define MEASURE_DIS_MSG_EVENT 1
-#define MEASURE_DIS_MSG_QUEUE_SIZE 10
+#define MEASURE_DIS_MSG_QUEUE_SIZE 20
 
 extern osal_event measure_dis_evt;
 extern uint8_t g_measure_dis_conn_id;
@@ -43,6 +44,8 @@ typedef enum {
 typedef enum {
     SLEM_MSG_LOCAL_IQ,
     SLEM_MSG_REMOTE_IQ,
+    SLEM_MSG_REMOTE_IMU,
+    SLEM_MSG_REMOTE_IMU_BATCH,
 } slem_msg_node_type_t;
 
 typedef struct {
@@ -79,6 +82,7 @@ int measure_dis_server_init(void);
 errcode_t sle_measure_dis_msg_add(measure_dis_msg_node_t *msg);
 void sle_measure_dis_msg_proc(void);
 int sle_measure_recv_dis(uint8_t *value, uint16_t len);
+void measure_dis_server_output_imu(const sle_imu_packet_t *packet);
 
 #ifdef __cplusplus
 #if __cplusplus
