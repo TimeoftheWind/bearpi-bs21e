@@ -55,6 +55,9 @@ unsigned long g_measure_dis_queue;
 measure_dis_msg_node_t g_msg_data;
 osal_event g_imu_output_evt;
 static unsigned long g_imu_output_queue;
+/* Accessed only by the SleImuOutput task; keep CSV buffers off its stack. */
+static char g_imu_csv_line[384];
+static char g_imu_csv_values[17][24];
 
 typedef struct {
     sle_imu_batch_t *batch;
@@ -450,23 +453,32 @@ void sle_measure_dis_imu_output_proc(void)
         if (node.batch != NULL) {
             for (uint16_t i = 0; i < node.batch->sample_count; i++) {
                 const sle_imu_packet_t *p = &node.batch->samples[i];
-                char line[384];
-                char v[17][24];
-                imu_float_text(v[0], sizeof(v[0]), p->roll, 3); imu_float_text(v[1], sizeof(v[1]), p->pitch, 3);
-                imu_float_text(v[2], sizeof(v[2]), p->yaw, 3); imu_float_text(v[3], sizeof(v[3]), p->ax, 6);
-                imu_float_text(v[4], sizeof(v[4]), p->ay, 6); imu_float_text(v[5], sizeof(v[5]), p->az, 6);
-                imu_float_text(v[6], sizeof(v[6]), p->gx, 3); imu_float_text(v[7], sizeof(v[7]), p->gy, 3);
-                imu_float_text(v[8], sizeof(v[8]), p->gz, 3); imu_float_text(v[9], sizeof(v[9]), p->mx, 3);
-                imu_float_text(v[10], sizeof(v[10]), p->my, 3); imu_float_text(v[11], sizeof(v[11]), p->mz, 3);
-                imu_float_text(v[12], sizeof(v[12]), p->q0, 6); imu_float_text(v[13], sizeof(v[13]), p->q1, 6);
-                imu_float_text(v[14], sizeof(v[14]), p->q2, 6); imu_float_text(v[15], sizeof(v[15]), p->q3, 6);
-                imu_float_text(v[16], sizeof(v[16]), p->temp, 3);
-                int n = snprintf(line, sizeof(line),
+                imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->roll, 3);
+                imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->pitch, 3);
+                imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->yaw, 3);
+                imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->ax, 6);
+                imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->ay, 6);
+                imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->az, 6);
+                imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->gx, 3);
+                imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->gy, 3);
+                imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->gz, 3);
+                imu_float_text(g_imu_csv_values[9], sizeof(g_imu_csv_values[9]), p->mx, 3);
+                imu_float_text(g_imu_csv_values[10], sizeof(g_imu_csv_values[10]), p->my, 3);
+                imu_float_text(g_imu_csv_values[11], sizeof(g_imu_csv_values[11]), p->mz, 3);
+                imu_float_text(g_imu_csv_values[12], sizeof(g_imu_csv_values[12]), p->q0, 6);
+                imu_float_text(g_imu_csv_values[13], sizeof(g_imu_csv_values[13]), p->q1, 6);
+                imu_float_text(g_imu_csv_values[14], sizeof(g_imu_csv_values[14]), p->q2, 6);
+                imu_float_text(g_imu_csv_values[15], sizeof(g_imu_csv_values[15]), p->q3, 6);
+                imu_float_text(g_imu_csv_values[16], sizeof(g_imu_csv_values[16]), p->temp, 3);
+                int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
                     "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
-                    (unsigned long long)p->timestamp_us, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], v[16]);
-                if ((n > 0) && ((size_t)n < sizeof(line))) {
-                    osal_printk("%s", line);
+                    (unsigned long long)p->timestamp_us, g_imu_csv_values[0], g_imu_csv_values[1],
+                    g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
+                    g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8], g_imu_csv_values[9],
+                    g_imu_csv_values[10], g_imu_csv_values[11], g_imu_csv_values[12], g_imu_csv_values[13],
+                    g_imu_csv_values[14], g_imu_csv_values[15], g_imu_csv_values[16]);
+                if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
+                    osal_printk("%s", g_imu_csv_line);
                 }
             }
             osal_kfree(node.batch);

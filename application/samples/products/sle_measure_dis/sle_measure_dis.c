@@ -18,6 +18,7 @@
 #define TASK_PRIORITY_HADM          27
 #define TASK_PRIORITY_IMU_OUTPUT    29
 #define STACK_SIZE_BASELINE 0x200
+#define IMU_OUTPUT_TASK_STACK_SIZE  0x2000
 #ifdef CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER
 #define BTH_HADM_SERVICE_STACK_SIZE (STACK_SIZE_BASELINE * 4 + 0x1000)
 #else
@@ -83,7 +84,7 @@ static void measure_dis_entry(void)
     }
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
     task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_imu_output_task,
-                                      0, "SleImuOutput", STACK_SIZE_BASELINE * 4);
+                                      0, "SleImuOutput", IMU_OUTPUT_TASK_STACK_SIZE);
     if (task_handle != NULL) {
         osal_kthread_set_priority(task_handle, TASK_PRIORITY_IMU_OUTPUT);
         osal_kfree(task_handle);
