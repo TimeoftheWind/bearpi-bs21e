@@ -7,7 +7,7 @@
  * 2023-07-17, Create file. \n
  */
 #include "sle_measure_dis_server.h"
-#include "uart_porting.h"
+#include <stdio.h>
 #include "sle_errcode.h"
 #include "sle_common.h"
 #include "sle_device_manager.h"
@@ -25,6 +25,16 @@
 #define SLEM_IQ_DATALEN 512
 
 static uint8_t g_stack_enable_status = 0;
+
+static void imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
+{
+    uint32_t scale = (decimals == 6U) ? 1000000U : 1000U;
+    int64_t scaled = (int64_t)(value * (float)scale + ((value >= 0.0f) ? 0.5f : -0.5f));
+    uint64_t magnitude = (scaled < 0) ? (uint64_t)(-scaled) : (uint64_t)scaled;
+    (void)snprintf(out, out_len, "%s%llu.%0*llu", (scaled < 0) ? "-" : "",
+        (unsigned long long)(magnitude / scale), (int)decimals,
+        (unsigned long long)(magnitude % scale));
+}
 
 /* sle server handle */
 static uint8_t g_server_id = 0;
@@ -50,17 +60,6 @@ typedef struct {
     sle_imu_batch_t *batch;
 } imu_output_node_t;
 
-typedef struct __attribute__((packed)) {
-    uint16_t sync;
-    uint8_t type;
-    uint8_t version;
-    uint16_t payload_len;
-    uint32_t sequence;
-} imu_port_frame_header_t;
-
-#define IMU_PORT_FRAME_SYNC 0xA55AU
-#define IMU_PORT_FRAME_TYPE_BATCH 1U
-#define IMU_PORT_FRAME_VERSION 1U
 
 measure_dis_server_data_t g_measure_dis_server_data = {
     .server_uuid = {0x11, 0x22, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -449,18 +448,27 @@ void sle_measure_dis_imu_output_proc(void)
             return;
         }
         if (node.batch != NULL) {
-            uint8_t frame[sizeof(imu_port_frame_header_t) + sizeof(sle_imu_batch_t)];
-            imu_port_frame_header_t header = {
-                .sync = IMU_PORT_FRAME_SYNC,
-                .type = IMU_PORT_FRAME_TYPE_BATCH,
-                .version = IMU_PORT_FRAME_VERSION,
-                .payload_len = sizeof(sle_imu_batch_t),
-                .sequence = node.batch->sequence,
-            };
-            (void)memcpy_s(frame, sizeof(frame), &header, sizeof(header));
-            (void)memcpy_s(frame + sizeof(header), sizeof(frame) - sizeof(header),
-                           node.batch, sizeof(*node.batch));
-            print_buffer(frame, sizeof(frame));
+            for (uint16_t i = 0; i < node.batch->sample_count; i++) {
+                const sle_imu_packet_t *p = &node.batch->samples[i];
+                char line[384];
+                char v[17][24];
+                imu_float_text(v[0], sizeof(v[0]), p->roll, 3); imu_float_text(v[1], sizeof(v[1]), p->pitch, 3);
+                imu_float_text(v[2], sizeof(v[2]), p->yaw, 3); imu_float_text(v[3], sizeof(v[3]), p->ax, 6);
+                imu_float_text(v[4], sizeof(v[4]), p->ay, 6); imu_float_text(v[5], sizeof(v[5]), p->az, 6);
+                imu_float_text(v[6], sizeof(v[6]), p->gx, 3); imu_float_text(v[7], sizeof(v[7]), p->gy, 3);
+                imu_float_text(v[8], sizeof(v[8]), p->gz, 3); imu_float_text(v[9], sizeof(v[9]), p->mx, 3);
+                imu_float_text(v[10], sizeof(v[10]), p->my, 3); imu_float_text(v[11], sizeof(v[11]), p->mz, 3);
+                imu_float_text(v[12], sizeof(v[12]), p->q0, 6); imu_float_text(v[13], sizeof(v[13]), p->q1, 6);
+                imu_float_text(v[14], sizeof(v[14]), p->q2, 6); imu_float_text(v[15], sizeof(v[15]), p->q3, 6);
+                imu_float_text(v[16], sizeof(v[16]), p->temp, 3);
+                int n = snprintf(line, sizeof(line),
+                    "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
+                    (unsigned long long)p->timestamp_us, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], v[16]);
+                if ((n > 0) && ((size_t)n < sizeof(line))) {
+                    osal_printk("%s", line);
+                }
+            }
             osal_kfree(node.batch);
         }
     }

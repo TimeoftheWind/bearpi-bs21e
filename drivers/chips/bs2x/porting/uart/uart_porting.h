@@ -171,13 +171,6 @@ void print_str(const char *str, ...);
 #endif
 
 /**
- * @brief Write raw bytes to the active debug serial port.
- *
- * This function is a no-op when software UART debug is disabled.
- */
-void print_buffer(const void *buf, uint32_t len);
-
-/**
  * @brief  UART clock enable or disable.
  * @param  [in]  bus The bus index of I2C.
  * @param  [in]  on Enable or disable.

@@ -459,25 +459,6 @@ void print_str(const char *str, ...)
 
 #endif
 
-void print_buffer(const void *buf, uint32_t len)
-{
-    if ((buf == NULL) || (len == 0U)) {
-        return;
-    }
-#ifdef SW_UART_DEBUG
-#ifdef CONFIG_DRIVERS_USB_SERIAL_GADGET
-    if (g_uart_mode == USB_SERIAL) {
-        usb_serial_write(0, (const char *)buf, len);
-        return;
-    }
-#endif
-    uapi_uart_write(g_sw_debug_uart, (const uint8_t *)buf, len, 0);
-#else
-    unused(buf);
-    unused(len);
-#endif
-}
-
 #if defined(CONFIG_DRIVERS_USB_SERIAL_GADGET) && defined(CONFIG_PRINT_HSO_LOG_BY_USB_SERIAL)
 void print_hso_log_by_usb_serial(const void *buf, uint32_t len)
 {

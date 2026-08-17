@@ -67,7 +67,7 @@ void sle_measure_dis_client_task(void)
 
 static void measure_dis_entry(void)
 {
-    osal_printk("IMU_RANGE_BUILD 2026-08-17-v12-iq-priority-binary-imu\r\n");
+    osal_printk("IMU_RANGE_BUILD 2026-08-17-v13-iq-priority-csv-imu\r\n");
     osal_task *task_handle = NULL;
     osal_kthread_lock();
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
