@@ -449,7 +449,6 @@ void sle_measure_dis_imu_output_proc(void)
             return;
         }
         if (node.batch != NULL) {
-#ifdef SW_UART_DEBUG
             uint8_t frame[sizeof(imu_port_frame_header_t) + sizeof(sle_imu_batch_t)];
             imu_port_frame_header_t header = {
                 .sync = IMU_PORT_FRAME_SYNC,
@@ -462,7 +461,6 @@ void sle_measure_dis_imu_output_proc(void)
             (void)memcpy_s(frame + sizeof(header), sizeof(frame) - sizeof(header),
                            node.batch, sizeof(*node.batch));
             print_buffer(frame, sizeof(frame));
-#endif
             osal_kfree(node.batch);
         }
     }
