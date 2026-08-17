@@ -289,23 +289,6 @@ errcode_t measure_dis_match_msg(measure_dis_msg_node_t *msg_node)
         case SLEM_MSG_REMOTE_IQ:
             ret = measure_dis_recv_remote_iq(msg_node);
             break;
-        case SLEM_MSG_REMOTE_IMU:
-            measure_dis_server_output_imu((const sle_imu_packet_t *)msg_node->data);
-            osal_kfree(msg_node->data);
-            ret = ERRCODE_SUCC;
-            break;
-        case SLEM_MSG_REMOTE_IMU_BATCH: {
-            const sle_imu_batch_t *batch = (const sle_imu_batch_t *)msg_node->data;
-            for (uint16_t i = 0; i < batch->sample_count; i++) {
-                measure_dis_server_output_imu(&batch->samples[i]);
-            }
-            if (batch->dropped_samples != 0U) {
-                osal_printk("IMU_DROP,%u,%u\r\n", batch->sequence, batch->dropped_samples);
-            }
-            osal_kfree(msg_node->data);
-            ret = ERRCODE_SUCC;
-            break;
-        }
         default:
             break;
     }

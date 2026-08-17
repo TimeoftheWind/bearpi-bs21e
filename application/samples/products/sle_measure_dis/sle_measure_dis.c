@@ -16,6 +16,7 @@
 #endif
 
 #define TASK_PRIORITY_HADM          27
+#define TASK_PRIORITY_IMU_OUTPUT    29
 #define STACK_SIZE_BASELINE 0x200
 #ifdef CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER
 #define BTH_HADM_SERVICE_STACK_SIZE (STACK_SIZE_BASELINE * 4 + 0x1000)
@@ -37,6 +38,17 @@ void sle_measure_dis_server_task(void)
         sle_measure_dis_msg_proc();
     }
 }
+
+static void *sle_measure_dis_imu_output_task(const char *arg)
+{
+    unused(arg);
+    while (1) {
+        (void)osal_event_read(&g_imu_output_evt, IMU_OUTPUT_EVENT,
+                              OSAL_WAIT_FOREVER, OSAL_WAITMODE_OR | OSAL_WAITMODE_CLR);
+        sle_measure_dis_imu_output_proc();
+    }
+    return NULL;
+}
 #elif defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT)
 void sle_measure_dis_client_task(void)
 {
@@ -55,7 +67,7 @@ void sle_measure_dis_client_task(void)
 
 static void measure_dis_entry(void)
 {
-    osal_printk("IMU_RANGE_BUILD 2026-08-11-v11-20hz-batch4\r\n");
+    osal_printk("IMU_RANGE_BUILD 2026-08-17-v12-iq-priority-binary-imu\r\n");
     osal_task *task_handle = NULL;
     osal_kthread_lock();
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
@@ -69,6 +81,14 @@ static void measure_dis_entry(void)
         osal_kthread_set_priority(task_handle, TASK_PRIORITY_HADM);
         osal_kfree(task_handle);
     }
+#if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
+    task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_imu_output_task,
+                                      0, "SleImuOutput", STACK_SIZE_BASELINE * 4);
+    if (task_handle != NULL) {
+        osal_kthread_set_priority(task_handle, TASK_PRIORITY_IMU_OUTPUT);
+        osal_kfree(task_handle);
+    }
+#endif
     osal_kthread_unlock();
 }
 

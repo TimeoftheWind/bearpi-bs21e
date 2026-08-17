@@ -7,7 +7,7 @@
  * 2023-07-17, Create file. \n
  */
 #include "sle_measure_dis_server.h"
-#include <stdio.h>
+#include "uart_porting.h"
 #include "sle_errcode.h"
 #include "sle_common.h"
 #include "sle_device_manager.h"
@@ -26,16 +26,6 @@
 
 static uint8_t g_stack_enable_status = 0;
 
-static void imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
-{
-    uint32_t scale = (decimals == 6U) ? 1000000U : 1000U;
-    int64_t scaled = (int64_t)(value * (float)scale + ((value >= 0.0f) ? 0.5f : -0.5f));
-    uint64_t magnitude = (scaled < 0) ? (uint64_t)(-scaled) : (uint64_t)scaled;
-    (void)snprintf(out, out_len, "%s%llu.%0*llu", (scaled < 0) ? "-" : "",
-        (unsigned long long)(magnitude / scale), (int)decimals,
-        (unsigned long long)(magnitude % scale));
-}
-
 /* sle server handle */
 static uint8_t g_server_id = 0;
 /* sle service handle */
@@ -53,6 +43,24 @@ uint8_t g_measure_dis_conn_id = SLEM_CONNET_INVAILD;
 osal_event measure_dis_evt;
 unsigned long g_measure_dis_queue;
 measure_dis_msg_node_t g_msg_data;
+osal_event g_imu_output_evt;
+static unsigned long g_imu_output_queue;
+
+typedef struct {
+    sle_imu_batch_t *batch;
+} imu_output_node_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t sync;
+    uint8_t type;
+    uint8_t version;
+    uint16_t payload_len;
+    uint32_t sequence;
+} imu_port_frame_header_t;
+
+#define IMU_PORT_FRAME_SYNC 0xA55AU
+#define IMU_PORT_FRAME_TYPE_BATCH 1U
+#define IMU_PORT_FRAME_VERSION 1U
 
 measure_dis_server_data_t g_measure_dis_server_data = {
     .server_uuid = {0x11, 0x22, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -167,28 +175,9 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
         case SLEM_PROFILE_MSG_IQ:
             ret = measure_dis_remote_iq(slem_profile_msg->len, slem_profile_msg->data);
             break;
-        case SLEM_PROFILE_MSG_IMU: {
-            if (slem_profile_msg->len != sizeof(sle_imu_packet_t)) {
-                osal_printk("invalid IMU packet length:%u\r\n", slem_profile_msg->len);
-                break;
-            }
-            sle_imu_packet_t *packet = (sle_imu_packet_t *)osal_kmalloc(sizeof(sle_imu_packet_t), 0);
-            if (packet == NULL) {
-                ret = ERRCODE_MALLOC;
-                break;
-            }
-            if (memcpy_s(packet, sizeof(*packet), slem_profile_msg->data, sizeof(*packet)) != EOK) {
-                osal_kfree(packet);
-                ret = ERRCODE_MEMCPY;
-                break;
-            }
-            measure_dis_msg_node_t node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IMU, 0, packet};
-            ret = sle_measure_dis_msg_add(&node);
-            if (ret != ERRCODE_SUCC) {
-                osal_kfree(packet);
-            }
+        case SLEM_PROFILE_MSG_IMU:
+            ret = ERRCODE_INVALID_PARAM;
             break;
-        }
         case SLEM_PROFILE_MSG_IMU_BATCH: {
             if (slem_profile_msg->len != sizeof(sle_imu_batch_t)) {
                 osal_printk("invalid IMU batch length:%u\r\n", slem_profile_msg->len);
@@ -209,8 +198,7 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
                 ret = ERRCODE_MEMCPY;
                 break;
             }
-            measure_dis_msg_node_t node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IMU_BATCH, 0, batch_copy};
-            ret = sle_measure_dis_msg_add(&node);
+            ret = sle_measure_dis_imu_output_add(batch_copy);
             if (ret != ERRCODE_SUCC) {
                 osal_kfree(batch_copy);
             }
@@ -225,31 +213,6 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
 
     if (unlikely(ret != ERRCODE_SLE_SUCCESS)) {
         osal_printk("client proc msg failed MSG_TYPE:%x ret:0x%x \r\n", slem_profile_msg->type, ret);
-    }
-}
-
-void measure_dis_server_output_imu(const sle_imu_packet_t *p)
-{
-    if (p == NULL) {
-        return;
-    }
-    char line[384];
-    char v[17][24];
-    imu_float_text(v[0], sizeof(v[0]), p->roll, 3); imu_float_text(v[1], sizeof(v[1]), p->pitch, 3);
-    imu_float_text(v[2], sizeof(v[2]), p->yaw, 3); imu_float_text(v[3], sizeof(v[3]), p->ax, 6);
-    imu_float_text(v[4], sizeof(v[4]), p->ay, 6); imu_float_text(v[5], sizeof(v[5]), p->az, 6);
-    imu_float_text(v[6], sizeof(v[6]), p->gx, 3); imu_float_text(v[7], sizeof(v[7]), p->gy, 3);
-    imu_float_text(v[8], sizeof(v[8]), p->gz, 3); imu_float_text(v[9], sizeof(v[9]), p->mx, 3);
-    imu_float_text(v[10], sizeof(v[10]), p->my, 3); imu_float_text(v[11], sizeof(v[11]), p->mz, 3);
-    imu_float_text(v[12], sizeof(v[12]), p->q0, 6); imu_float_text(v[13], sizeof(v[13]), p->q1, 6);
-    imu_float_text(v[14], sizeof(v[14]), p->q2, 6); imu_float_text(v[15], sizeof(v[15]), p->q3, 6);
-    imu_float_text(v[16], sizeof(v[16]), p->temp, 3);
-    int n = snprintf(line, sizeof(line),
-        "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
-        (unsigned long long)p->timestamp_us, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-        v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], v[16]);
-    if ((n > 0) && ((size_t)n < sizeof(line))) {
-        osal_printk("%s", line);
     }
 }
 
@@ -466,6 +429,45 @@ void sle_measure_dis_msg_proc(void)
     }
 }
 
+errcode_t sle_measure_dis_imu_output_add(sle_imu_batch_t *batch)
+{
+    imu_output_node_t node = { .batch = batch };
+    if ((batch == NULL) || (g_imu_output_queue == 0U) ||
+        (osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) ||
+        (osal_event_write(&g_imu_output_evt, IMU_OUTPUT_EVENT) != OSAL_SUCCESS)) {
+        return ERRCODE_FAIL;
+    }
+    return ERRCODE_SUCC;
+}
+
+void sle_measure_dis_imu_output_proc(void)
+{
+    while (osal_msg_queue_get_msg_num(g_imu_output_queue) > 0U) {
+        imu_output_node_t node = {0};
+        uint32_t node_size = sizeof(node);
+        if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
+            return;
+        }
+        if (node.batch != NULL) {
+#ifdef SW_UART_DEBUG
+            uint8_t frame[sizeof(imu_port_frame_header_t) + sizeof(sle_imu_batch_t)];
+            imu_port_frame_header_t header = {
+                .sync = IMU_PORT_FRAME_SYNC,
+                .type = IMU_PORT_FRAME_TYPE_BATCH,
+                .version = IMU_PORT_FRAME_VERSION,
+                .payload_len = sizeof(sle_imu_batch_t),
+                .sequence = node.batch->sequence,
+            };
+            (void)memcpy_s(frame, sizeof(frame), &header, sizeof(header));
+            (void)memcpy_s(frame + sizeof(header), sizeof(frame) - sizeof(header),
+                           node.batch, sizeof(*node.batch));
+            print_buffer(frame, sizeof(frame));
+#endif
+            osal_kfree(node.batch);
+        }
+    }
+}
+
 errcode_t sle_measure_dis_msg_add(measure_dis_msg_node_t *msg)
 {
     errcode_t ret = ERRCODE_FAIL;
@@ -506,6 +508,11 @@ void sle_measure_dis_init(void)
                               &g_measure_dis_queue, 0, sizeof(measure_dis_msg_node_t)) != ERRCODE_SUCC) {
         osal_printk("osal_queue_init init failed \r\n");
         return;
+    }
+    if ((osal_event_init(&g_imu_output_evt) != ERRCODE_SUCC) ||
+        (osal_msg_queue_create("imu_output_queue", IMU_OUTPUT_QUEUE_SIZE, &g_imu_output_queue,
+                               0, sizeof(imu_output_node_t)) != ERRCODE_SUCC)) {
+        osal_printk("imu output queue init failed\r\n");
     }
 }
 

@@ -33,8 +33,11 @@ extern "C" {
 
 #define MEASURE_DIS_MSG_EVENT 1
 #define MEASURE_DIS_MSG_QUEUE_SIZE 20
+#define IMU_OUTPUT_EVENT 1
+#define IMU_OUTPUT_QUEUE_SIZE 12
 
 extern osal_event measure_dis_evt;
+extern osal_event g_imu_output_evt;
 extern uint8_t g_measure_dis_conn_id;
 
 typedef enum {
@@ -81,8 +84,9 @@ int measure_dis_server_write_client(uint32_t type, uint8_t *data, uint32_t data_
 int measure_dis_server_init(void);
 errcode_t sle_measure_dis_msg_add(measure_dis_msg_node_t *msg);
 void sle_measure_dis_msg_proc(void);
+void sle_measure_dis_imu_output_proc(void);
+errcode_t sle_measure_dis_imu_output_add(sle_imu_batch_t *batch);
 int sle_measure_recv_dis(uint8_t *value, uint16_t len);
-void measure_dis_server_output_imu(const sle_imu_packet_t *packet);
 
 #ifdef __cplusplus
 #if __cplusplus

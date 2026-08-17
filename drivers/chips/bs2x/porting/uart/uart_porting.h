@@ -168,6 +168,7 @@ void sw_debug_uart_init(uint32_t baud_rate);
 void sw_debug_uart_deinit(void);
 void sw_debug_set_uart_bus(uart_bus_t bus);
 void print_str(const char *str, ...);
+void print_buffer(const void *buf, uint32_t len);
 #endif
 
 /**

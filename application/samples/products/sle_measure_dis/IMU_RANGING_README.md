@@ -25,12 +25,17 @@ In HiSpark configuration select:
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER=y`
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT=n`
 
-The Server receives four-sample IMU batches, calculates distance locally, and expands each batch back into
-individual records on its debug serial port. Existing Windows-side CSV parsing can therefore continue to use
-exactly 18 comma-separated columns per IMU sample:
+The Server gives IQ/distance processing its own higher-priority task. IMU batches are emitted by a separate
+lower-priority task as binary frames on the same debug serial port; they are no longer expanded to CSV.
+Each frame is: `0xA55A` (little-endian uint16), type `1` (uint8), version `1` (uint8), payload length
+(little-endian uint16), batch sequence (little-endian uint32), then one raw `sle_imu_batch_t` payload.
+
+The payload starts with `sequence` (uint32), `sample_count` (uint16), and `dropped_samples` (uint16), followed
+by four raw `sle_imu_packet_t` records. Each record contains exactly these fields in target-native little-endian
+layout:
 
 ```text
-timestamp,roll,pitch,yaw,ax,ay,az,gx,gy,gz,mx,my,mz,q0,q1,q2,q3,temp
+timestamp_us,roll,pitch,yaw,ax,ay,az,gx,gy,gz,mx,my,mz,q0,q1,q2,q3,temp
 ```
 
 Distance records are separate lines:
@@ -39,11 +44,7 @@ Distance records are separate lines:
 DIST,timestamp_us,distance_m,calculation_time_ms
 ```
 
-If the client ring overwrites old samples, the server additionally prints:
-
-```text
-IMU_DROP,batch_sequence,dropped_sample_count
-```
+`dropped_samples` reports client-side ring-buffer overwrites since the preceding transmitted batch.
 
 ## Units and first hardware checks
 
