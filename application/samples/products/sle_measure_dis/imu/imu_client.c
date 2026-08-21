@@ -6,9 +6,10 @@
 
 #define IMU_TASK_STACK 0x2000
 #define IMU_TX_TASK_STACK 0x1800
-#define IMU_TASK_PRIORITY 29
+#define IMU_TASK_PRIORITY 26
 #define IMU_TX_TASK_PRIORITY 28
 #define IMU_SAMPLE_PERIOD_US 50000ULL
+#define IMU_SAMPLE_REPHASE_THRESHOLD_US (IMU_SAMPLE_PERIOD_US / 2U)
 #define IMU_TX_EVENT 1U
 #define IMU_TX_IDLE_GUARD_US 80000ULL
 #define IMU_TX_RETRY_GUARD_US 10000ULL
@@ -167,8 +168,10 @@ static void *imu_client_task(const char *arg)
     while (1) {
         uint64_t now_us = uapi_tcxo_get_us();
         if ((int64_t)(now_us - next_sample_us) >= 0) {
+            uint64_t scheduled_sample_us = next_sample_us;
             next_sample_us += IMU_SAMPLE_PERIOD_US;
-            if ((int64_t)(now_us - next_sample_us) >= (int64_t)(IMU_SAMPLE_PERIOD_US * 2U)) {
+            if ((int64_t)(now_us - scheduled_sample_us) >=
+                (int64_t)IMU_SAMPLE_REPHASE_THRESHOLD_US) {
                 next_sample_us = now_us + IMU_SAMPLE_PERIOD_US;
             }
             if (sle_imu_sensor_read(&packet) == ERRCODE_SUCC) {
