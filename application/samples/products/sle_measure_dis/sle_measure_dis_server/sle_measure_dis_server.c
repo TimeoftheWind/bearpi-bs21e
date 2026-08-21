@@ -26,14 +26,24 @@
 
 static uint8_t g_stack_enable_status = 0;
 
-static void imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
+static bool imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
 {
     uint32_t scale = (decimals == 6U) ? 1000000U : 1000U;
     int64_t scaled = (int64_t)(value * (float)scale + ((value >= 0.0f) ? 0.5f : -0.5f));
     uint64_t magnitude = (scaled < 0) ? (uint64_t)(-scaled) : (uint64_t)scaled;
-    (void)snprintf(out, out_len, "%s%llu.%0*llu", (scaled < 0) ? "-" : "",
-        (unsigned long long)(magnitude / scale), (int)decimals,
-        (unsigned long long)(magnitude % scale));
+    int n;
+    if (decimals == 6U) {
+        n = snprintf(out, out_len, "%s%llu.%06llu", (scaled < 0) ? "-" : "",
+            (unsigned long long)(magnitude / scale),
+            (unsigned long long)(magnitude % scale));
+    } else if (decimals == 3U) {
+        n = snprintf(out, out_len, "%s%llu.%03llu", (scaled < 0) ? "-" : "",
+            (unsigned long long)(magnitude / scale),
+            (unsigned long long)(magnitude % scale));
+    } else {
+        return false;
+    }
+    return (n > 0) && ((size_t)n < out_len);
 }
 
 /* sle server handle */
@@ -501,15 +511,19 @@ static void sle_measure_dis_imu_output_one(void)
     }
     for (uint16_t i = 0; i < node.batch.sample_count; i++) {
         const sle_imu_packet_t *p = &node.batch.samples[i];
-        imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6);
-        imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6);
-        imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6);
-        imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3);
-        imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3);
-        imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3);
-        imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3);
-        imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3);
-        imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
+        bool fields_ok =
+            imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6) &&
+            imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6) &&
+            imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6) &&
+            imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3) &&
+            imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3) &&
+            imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3) &&
+            imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3) &&
+            imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3) &&
+            imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
+        if (!fields_ok) {
+            continue;
+        }
         int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
             "IMU,%u,%u,%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
             node.batch.sequence, p->sequence, (unsigned long long)p->timestamp_us,
