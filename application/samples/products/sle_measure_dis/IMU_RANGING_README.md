@@ -10,8 +10,9 @@ In HiSpark configuration select:
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER=n`
 
 The Client samples the sensors at 20 Hz and stores the acceleration, gyroscope and magnetometer data in a
-32-entry overwrite-oldest ring. A single SSAP transmit task sends IQ first, then up to two four-sample IMU
-batches after each complete IQ report. `SLEM_PROFILE_MSG_IMU_BATCH` therefore carries four timestamped samples.
+32-entry overwrite-oldest ring. A single SSAP transmit task always gives pending IQ data priority, while
+four-sample IMU batches are sent independently as soon as enough samples are available. Failed IMU batches
+remain pending for retry instead of being discarded. `SLEM_PROFILE_MSG_IMU_BATCH` carries four timestamped samples.
 
 Default wiring inherited from `icm42607p_lowpower_test`:
 

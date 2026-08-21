@@ -10,8 +10,8 @@
 #define IMU_TX_TASK_PRIORITY 28
 #define IMU_SAMPLE_PERIOD_US 50000ULL
 #define IMU_TX_EVENT 1U
-#define IMU_BATCHES_PER_IQ 2U
 #define IMU_TX_IDLE_GUARD_US 80000ULL
+#define IMU_TX_RETRY_GUARD_US 10000ULL
 #define IMU_TX_WAKE_PERIOD_MS 10U
 
 typedef struct {
@@ -30,7 +30,6 @@ static volatile uint8_t g_iq_pending;
 static uint8_t g_iq_data[sizeof(sle_channel_sounding_iq_trans_t)];
 static uint32_t g_iq_data_len;
 static uint32_t g_batch_sequence;
-static volatile uint8_t g_imu_batch_credit;
 static uint64_t g_imu_tx_not_before_us;
 
 static void imu_ring_push(const sle_imu_packet_t *sample)
@@ -116,6 +115,7 @@ static void *imu_tx_task(const char *arg)
     uint8_t iq_data[sizeof(sle_channel_sounding_iq_trans_t)];
     uint32_t iq_len;
     sle_imu_batch_t batch;
+    bool batch_pending = false;
     unused(arg);
 
     while (1) {
@@ -127,21 +127,26 @@ static void *imu_tx_task(const char *arg)
 
         if (imu_tx_take_iq(iq_data, &iq_len)) {
             if (measure_dis_client_send_now(SLEM_PROFILE_MSG_IQ, iq_data, iq_len) == ERRCODE_SUCC) {
-                g_imu_batch_credit = IMU_BATCHES_PER_IQ;
                 g_imu_tx_not_before_us = uapi_tcxo_get_us() + IMU_TX_IDLE_GUARD_US;
             }
             continue;
         }
 
-        if ((g_imu_batch_credit == 0U) || imu_tx_iq_pending() ||
-            (uapi_tcxo_get_us() < g_imu_tx_not_before_us) || !imu_ring_take_batch(&batch)) {
+        if (imu_tx_iq_pending() || (uapi_tcxo_get_us() < g_imu_tx_not_before_us)) {
+            continue;
+        }
+        if (!batch_pending) {
+            batch_pending = imu_ring_take_batch(&batch);
+        }
+        if (!batch_pending) {
             continue;
         }
         if (measure_dis_client_send_now(SLEM_PROFILE_MSG_IMU_BATCH,
                                         (const uint8_t *)&batch, sizeof(batch)) != ERRCODE_SUCC) {
             osal_printk("IMU batch send failed, sequence:%u\r\n", batch.sequence);
+            g_imu_tx_not_before_us = uapi_tcxo_get_us() + IMU_TX_RETRY_GUARD_US;
         } else {
-            g_imu_batch_credit--;
+            batch_pending = false;
             g_imu_tx_not_before_us = uapi_tcxo_get_us() + IMU_TX_IDLE_GUARD_US;
         }
     }
