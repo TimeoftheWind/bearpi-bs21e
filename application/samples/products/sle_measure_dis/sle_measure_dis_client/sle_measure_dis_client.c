@@ -18,7 +18,7 @@
 #include "cmsis_os2.h"
 #include "sle_measure_dis_client_slem.h"
 
-uint8_t iq_msg_buff[sizeof(measure_ids_msg_t) + sizeof(measure_dis_stored_iq_data_t)];
+static uint8_t g_sle_tx_buf[sizeof(measure_ids_msg_t) + sizeof(sle_channel_sounding_iq_trans_t)];
 
 #define BLE_SLE_TAG_TASK_DURATION_MS 10
 #define ADV_TO_SERVER 2
@@ -400,22 +400,19 @@ int measure_dis_client_send_now(uint32_t type, const uint8_t *data, uint32_t dat
 {
     uint32_t ret = ERRCODE_SUCC;
     uint16_t len = sizeof(measure_ids_msg_t) + data_len;
-    measure_ids_msg_t *slem_msg = (measure_ids_msg_t *)osal_kmalloc(len, 0);
-    if (slem_msg == NULL) {
-        return ERRCODE_MALLOC;
+    if ((data == NULL) || (len > sizeof(g_sle_tx_buf))) {
+        return ERRCODE_INVALID_PARAM;
     }
+    measure_ids_msg_t *slem_msg = (measure_ids_msg_t *)g_sle_tx_buf;
     slem_msg->type = type;
     slem_msg->len = data_len;
     if (memcpy_s(slem_msg->data, data_len, data, data_len) != EOK) {
-        osal_kfree(slem_msg);
         return ERRCODE_MEMCPY;
     }
     ret = measure_dis_client_write_proc(0, len, (uint8_t *)(slem_msg));
     if (ret != ERRCODE_SUCC) {
         osal_printk("client send to server failed.\n");
     }
-    osal_kfree(slem_msg);
-
     return ret;
 }
 

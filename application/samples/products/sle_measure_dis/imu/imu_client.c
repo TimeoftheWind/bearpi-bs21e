@@ -157,7 +157,7 @@ static void *imu_client_task(const char *arg)
         osal_printk("IMU init failed\r\n");
         return NULL;
     }
-    osal_printk("IMU init ok, sampling at 20 Hz, batching 4 samples\r\n");
+    osal_printk("IMU init ok, sampling 9-axis data at 20 Hz, batching 4 samples\r\n");
     uint64_t next_sample_us = uapi_tcxo_get_us();
     while (1) {
         uint64_t now_us = uapi_tcxo_get_us();

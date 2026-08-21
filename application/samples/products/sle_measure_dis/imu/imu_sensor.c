@@ -1,4 +1,3 @@
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "gpio.h"
@@ -34,19 +33,11 @@
 #define ICM_WHO_AM_I 0x60
 #define SPI_READ_MASK 0x80
 #define RAW_LEN 14
-#define DEG_TO_RAD 0.01745329251994329577f
-#define RAD_TO_DEG 57.295779513082320876f
 
 /* Values match the 0x68 full-scale configuration used by the original test. */
 #define ACC_LSB_PER_G 16384.0f
 #define GYRO_LSB_PER_DPS 131.0f
-#define TEMP_LSB_PER_C 132.48f
-#define TEMP_OFFSET_C 25.0f
 #define MAG_LSB_PER_UT 1.0f
-
-static float g_q0 = 1.0f, g_q1, g_q2, g_q3;
-static float g_ix, g_iy, g_iz;
-static uint64_t g_last_us;
 
 static uint8_t soft_spi_transfer(uint8_t tx)
 {
@@ -133,50 +124,6 @@ static errcode_t mag_read(float *mx, float *my, float *mz)
     return ERRCODE_SUCC;
 }
 
-static float inv_norm(float x, float y, float z)
-{
-    float n = sqrtf(x * x + y * y + z * z);
-    return n > 0.000001f ? 1.0f / n : 0.0f;
-}
-
-static void mahony_update(float gx, float gy, float gz, float ax, float ay, float az,
-    float mx, float my, float mz, float dt)
-{
-    const float kp = 2.0f;
-    const float ki = 0.02f;
-    float r = inv_norm(ax, ay, az);
-    if (r == 0.0f || dt <= 0.0f) return;
-    ax *= r; ay *= r; az *= r;
-    r = inv_norm(mx, my, mz);
-    if (r == 0.0f) return;
-    mx *= r; my *= r; mz *= r;
-
-    float q0q0=g_q0*g_q0, q0q1=g_q0*g_q1, q0q2=g_q0*g_q2, q0q3=g_q0*g_q3;
-    float q1q1=g_q1*g_q1, q1q2=g_q1*g_q2, q1q3=g_q1*g_q3;
-    float q2q2=g_q2*g_q2, q2q3=g_q2*g_q3, q3q3=g_q3*g_q3;
-    float hx=2.0f*(mx*(0.5f-q2q2-q3q3)+my*(q1q2-q0q3)+mz*(q1q3+q0q2));
-    float hy=2.0f*(mx*(q1q2+q0q3)+my*(0.5f-q1q1-q3q3)+mz*(q2q3-q0q1));
-    float bx=sqrtf(hx*hx+hy*hy);
-    float bz=2.0f*(mx*(q1q3-q0q2)+my*(q2q3+q0q1)+mz*(0.5f-q1q1-q2q2));
-    float vx=2.0f*(q1q3-q0q2), vy=2.0f*(q0q1+q2q3), vz=q0q0-q1q1-q2q2+q3q3;
-    float wx=2.0f*(bx*(0.5f-q2q2-q3q3)+bz*(q1q3-q0q2));
-    float wy=2.0f*(bx*(q1q2-q0q3)+bz*(q0q1+q2q3));
-    float wz=2.0f*(bx*(q0q2+q1q3)+bz*(0.5f-q1q1-q2q2));
-    float ex=(ay*vz-az*vy)+(my*wz-mz*wy);
-    float ey=(az*vx-ax*vz)+(mz*wx-mx*wz);
-    float ez=(ax*vy-ay*vx)+(mx*wy-my*wx);
-    g_ix += ki*ex*dt; g_iy += ki*ey*dt; g_iz += ki*ez*dt;
-    gx += kp*ex+g_ix; gy += kp*ey+g_iy; gz += kp*ez+g_iz;
-    gx *= 0.5f*dt; gy *= 0.5f*dt; gz *= 0.5f*dt;
-    float qa=g_q0, qb=g_q1, qc=g_q2;
-    g_q0 += -qb*gx-qc*gy-g_q3*gz;
-    g_q1 += qa*gx+qc*gz-g_q3*gy;
-    g_q2 += qa*gy-qb*gz+g_q3*gx;
-    g_q3 += qa*gz+qb*gy-qc*gx;
-    r = 1.0f/sqrtf(g_q0*g_q0+g_q1*g_q1+g_q2*g_q2+g_q3*g_q3);
-    g_q0*=r; g_q1*=r; g_q2*=r; g_q3*=r;
-}
-
 errcode_t sle_imu_sensor_init(void)
 {
     uint8_t id = 0;
@@ -197,7 +144,6 @@ errcode_t sle_imu_sensor_init(void)
     if (mag_write(0x29, 0x06) != ERRCODE_SUCC || mag_write(0x0B, 0x08) != ERRCODE_SUCC ||
         mag_write(0x0A, 0xC3) != ERRCODE_SUCC) return ERRCODE_FAIL;
     osal_printk("QMC5883P configured\r\n");
-    g_last_us = uapi_tcxo_get_us();
     return ERRCODE_SUCC;
 }
 
@@ -218,18 +164,8 @@ errcode_t sle_imu_sensor_read(sle_imu_packet_t *p)
         return ret;
     }
     now = uapi_tcxo_get_us(); p->timestamp_us = now;
-    p->temp=(float)i16_be(&b[0])/TEMP_LSB_PER_C+TEMP_OFFSET_C;
     p->ax=(float)i16_be(&b[2])/ACC_LSB_PER_G; p->ay=(float)i16_be(&b[4])/ACC_LSB_PER_G;
     p->az=(float)i16_be(&b[6])/ACC_LSB_PER_G; p->gx=(float)i16_be(&b[8])/GYRO_LSB_PER_DPS;
     p->gy=(float)i16_be(&b[10])/GYRO_LSB_PER_DPS; p->gz=(float)i16_be(&b[12])/GYRO_LSB_PER_DPS;
-    float dt = (float)(now-g_last_us)*0.000001f;
-    if (dt > 0.1f) dt = 0.02f;
-    mahony_update(p->gx*DEG_TO_RAD,p->gy*DEG_TO_RAD,p->gz*DEG_TO_RAD,
-        p->ax,p->ay,p->az,p->mx,p->my,p->mz,dt);
-    g_last_us=now; p->q0=g_q0; p->q1=g_q1; p->q2=g_q2; p->q3=g_q3;
-    p->roll=atan2f(2.0f*(g_q0*g_q1+g_q2*g_q3),1.0f-2.0f*(g_q1*g_q1+g_q2*g_q2))*RAD_TO_DEG;
-    float s=2.0f*(g_q0*g_q2-g_q3*g_q1); if(s>1.0f)s=1.0f; if(s<-1.0f)s=-1.0f;
-    p->pitch=asinf(s)*RAD_TO_DEG;
-    p->yaw=atan2f(2.0f*(g_q0*g_q3+g_q1*g_q2),1.0f-2.0f*(g_q2*g_q2+g_q3*g_q3))*RAD_TO_DEG;
     return ERRCODE_SUCC;
 }

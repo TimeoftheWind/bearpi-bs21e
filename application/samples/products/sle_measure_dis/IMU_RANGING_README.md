@@ -9,7 +9,7 @@ In HiSpark configuration select:
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT=y`
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER=n`
 
-The Client samples the sensors at 20 Hz, runs a 9-axis Mahony attitude filter, and stores samples in a
+The Client samples the sensors at 20 Hz and stores the acceleration, gyroscope and magnetometer data in a
 32-entry overwrite-oldest ring. A single SSAP transmit task sends IQ first, then up to two four-sample IMU
 batches after each complete IQ report. `SLEM_PROFILE_MSG_IMU_BATCH` therefore carries four timestamped samples.
 
@@ -30,7 +30,7 @@ lower-priority task, which emits one CSV record per IMU sample on the same debug
 exactly these fields:
 
 ```text
-timestamp_us,roll,pitch,yaw,ax,ay,az,gx,gy,gz,mx,my,mz,q0,q1,q2,q3,temp
+timestamp_us,ax,ay,az,gx,gy,gz,mx,my,mz
 ```
 
 Distance records are separate lines:
@@ -44,14 +44,10 @@ Client-side ring-buffer overwrites are reported as `IMU_DROP,batch_sequence,drop
 ## Units and first hardware checks
 
 - timestamp: microseconds from the battery board TCXO since boot
-- roll/pitch/yaw: degrees
 - ax/ay/az: g
 - gx/gy/gz: degrees per second
 - mx/my/mz: QMC5883P raw counts pending board-specific calibration
-- q0/q1/q2/q3: unit quaternion, scalar first
-- temp: degrees Celsius
 
 The constants and axis directions in `imu/imu_sensor.c` must be checked on the physical IMU carrier. Keep the
 board still and level first: acceleration should be close to `(0, 0, +/-1)`, gyro close to zero, and the
-quaternion norm close to one. Magnetometer hard/soft-iron calibration and gyro bias calibration are still
-required for accurate yaw.
+Magnetometer hard/soft-iron calibration and gyro bias calibration are still required for calibrated data.

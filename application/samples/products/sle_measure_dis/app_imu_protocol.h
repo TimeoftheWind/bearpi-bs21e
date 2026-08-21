@@ -10,9 +10,6 @@
 
 typedef struct {
     uint64_t timestamp_us;
-    float roll;
-    float pitch;
-    float yaw;
     float ax;
     float ay;
     float az;
@@ -22,11 +19,6 @@ typedef struct {
     float mx;
     float my;
     float mz;
-    float q0;
-    float q1;
-    float q2;
-    float q3;
-    float temp;
 } sle_imu_packet_t;
 
 typedef struct {

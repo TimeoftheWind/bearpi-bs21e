@@ -56,11 +56,11 @@ measure_dis_msg_node_t g_msg_data;
 osal_event g_imu_output_evt;
 static unsigned long g_imu_output_queue;
 /* Accessed only by the SleImuOutput task; keep CSV buffers off its stack. */
-static char g_imu_csv_line[384];
-static char g_imu_csv_values[17][24];
+static char g_imu_csv_line[224];
+static char g_imu_csv_values[9][24];
 
 typedef struct {
-    sle_imu_batch_t *batch;
+    sle_imu_batch_t batch;
 } imu_output_node_t;
 
 
@@ -190,20 +190,7 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
                 osal_printk("invalid IMU batch count:%u\r\n", batch->sample_count);
                 break;
             }
-            sle_imu_batch_t *batch_copy = (sle_imu_batch_t *)osal_kmalloc(sizeof(*batch_copy), 0);
-            if (batch_copy == NULL) {
-                ret = ERRCODE_MALLOC;
-                break;
-            }
-            if (memcpy_s(batch_copy, sizeof(*batch_copy), batch, sizeof(*batch_copy)) != EOK) {
-                osal_kfree(batch_copy);
-                ret = ERRCODE_MEMCPY;
-                break;
-            }
-            ret = sle_measure_dis_imu_output_add(batch_copy);
-            if (ret != ERRCODE_SUCC) {
-                osal_kfree(batch_copy);
-            }
+            ret = sle_measure_dis_imu_output_add(batch);
             break;
         }
         default:
@@ -431,14 +418,26 @@ void sle_measure_dis_msg_proc(void)
     }
 }
 
-errcode_t sle_measure_dis_imu_output_add(sle_imu_batch_t *batch)
+errcode_t sle_measure_dis_imu_output_add(const sle_imu_batch_t *batch)
 {
-    imu_output_node_t node = { .batch = batch };
-    if ((batch == NULL) || (g_imu_output_queue == 0U) ||
-        (osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) ||
-        (osal_event_write(&g_imu_output_evt, IMU_OUTPUT_EVENT) != OSAL_SUCCESS)) {
+    if ((batch == NULL) || (g_imu_output_queue == 0U)) {
         return ERRCODE_FAIL;
     }
+    imu_output_node_t node;
+    if (memcpy_s(&node.batch, sizeof(node.batch), batch, sizeof(*batch)) != EOK) {
+        return ERRCODE_MEMCPY;
+    }
+    if (osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+        imu_output_node_t oldest;
+        uint32_t oldest_size = sizeof(oldest);
+        if (osal_msg_queue_read_copy(g_imu_output_queue, &oldest, &oldest_size, 0) != OSAL_SUCCESS ||
+            osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+            osal_printk("IMU_DROP,%u,output_queue_busy\r\n", batch->sequence);
+            return ERRCODE_FAIL;
+        }
+        osal_printk("IMU_DROP,%u,output_queue_oldest\r\n", oldest.batch.sequence);
+    }
+    (void)osal_event_write(&g_imu_output_evt, IMU_OUTPUT_EVENT);
     return ERRCODE_SUCC;
 }
 
@@ -450,38 +449,25 @@ void sle_measure_dis_imu_output_proc(void)
         if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
             return;
         }
-        if (node.batch != NULL) {
-            for (uint16_t i = 0; i < node.batch->sample_count; i++) {
-                const sle_imu_packet_t *p = &node.batch->samples[i];
-                imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->roll, 3);
-                imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->pitch, 3);
-                imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->yaw, 3);
-                imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->ax, 6);
-                imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->ay, 6);
-                imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->az, 6);
-                imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->gx, 3);
-                imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->gy, 3);
-                imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->gz, 3);
-                imu_float_text(g_imu_csv_values[9], sizeof(g_imu_csv_values[9]), p->mx, 3);
-                imu_float_text(g_imu_csv_values[10], sizeof(g_imu_csv_values[10]), p->my, 3);
-                imu_float_text(g_imu_csv_values[11], sizeof(g_imu_csv_values[11]), p->mz, 3);
-                imu_float_text(g_imu_csv_values[12], sizeof(g_imu_csv_values[12]), p->q0, 6);
-                imu_float_text(g_imu_csv_values[13], sizeof(g_imu_csv_values[13]), p->q1, 6);
-                imu_float_text(g_imu_csv_values[14], sizeof(g_imu_csv_values[14]), p->q2, 6);
-                imu_float_text(g_imu_csv_values[15], sizeof(g_imu_csv_values[15]), p->q3, 6);
-                imu_float_text(g_imu_csv_values[16], sizeof(g_imu_csv_values[16]), p->temp, 3);
-                int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
-                    "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
-                    (unsigned long long)p->timestamp_us, g_imu_csv_values[0], g_imu_csv_values[1],
-                    g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
-                    g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8], g_imu_csv_values[9],
-                    g_imu_csv_values[10], g_imu_csv_values[11], g_imu_csv_values[12], g_imu_csv_values[13],
-                    g_imu_csv_values[14], g_imu_csv_values[15], g_imu_csv_values[16]);
-                if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
-                    osal_printk("%s", g_imu_csv_line);
-                }
+        for (uint16_t i = 0; i < node.batch.sample_count; i++) {
+            const sle_imu_packet_t *p = &node.batch.samples[i];
+            imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6);
+            imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6);
+            imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6);
+            imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3);
+            imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3);
+            imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3);
+            imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3);
+            imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3);
+            imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
+            int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
+                "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
+                (unsigned long long)p->timestamp_us, g_imu_csv_values[0], g_imu_csv_values[1],
+                g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
+                g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8]);
+            if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
+                osal_printk("%s", g_imu_csv_line);
             }
-            osal_kfree(node.batch);
         }
     }
 }
@@ -499,10 +485,7 @@ errcode_t sle_measure_dis_msg_add(measure_dis_msg_node_t *msg)
             ret = ERRCODE_FAIL;
             break;
         }
-        if (osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT) != OSAL_SUCCESS) {
-            ret = ERRCODE_FAIL;
-            break;
-        }
+        (void)osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT);
         ret = ERRCODE_SUCC;
     } while (0);
 

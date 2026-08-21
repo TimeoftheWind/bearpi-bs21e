@@ -24,6 +24,35 @@ uint32_t counter = 0;
 static uint32_t g_last_distance_calc_ms;
 
 #define MEASURE_DIS_CALC_MIN_INTERVAL_MS 400U
+#define IQ_SLOT_COUNT 2U
+
+static sle_channel_sounding_iq_report_t g_local_iq_slots[IQ_SLOT_COUNT];
+static sle_channel_sounding_iq_trans_t g_remote_iq_slots[IQ_SLOT_COUNT];
+static uint8_t g_local_iq_slot_busy[IQ_SLOT_COUNT];
+static uint8_t g_remote_iq_slot_busy[IQ_SLOT_COUNT];
+static uint32_t g_local_iq_dropped;
+static uint32_t g_remote_iq_dropped;
+
+static int32_t iq_slot_claim(uint8_t *busy)
+{
+    uint32_t irq_status = osal_irq_lock();
+    for (uint32_t i = 0; i < IQ_SLOT_COUNT; i++) {
+        if (busy[i] == 0U) {
+            busy[i] = 1U;
+            osal_irq_restore(irq_status);
+            return (int32_t)i;
+        }
+    }
+    osal_irq_restore(irq_status);
+    return -1;
+}
+
+static void iq_slot_release(uint8_t *busy, uint32_t slot)
+{
+    uint32_t irq_status = osal_irq_lock();
+    busy[slot] = 0U;
+    osal_irq_restore(irq_status);
+}
 
 measure_dis_stored_iq_data_t g_md_local_iq_data;
 uint8_t g_md_store_local_iq_complete;
@@ -231,22 +260,24 @@ void measure_dis_cs_state_changed_cb(uint8_t slem_status, errcode_t status)
 
 void measure_dis_cs_iq_report_cb(uint16_t conn_id, sle_channel_sounding_iq_report_t *report)
 {
-    errcode_t ret = ERRCODE_FAIL;
-
-    sle_channel_sounding_iq_report_t *report_local = NULL;
-    uint32_t len = sizeof(sle_channel_sounding_iq_report_t);
-    report_local = (sle_channel_sounding_iq_report_t *)osal_kmalloc(len, 0);
-    if (report_local == NULL) {
+    if (report == NULL) {
         return;
     }
-    if (memcpy_s(report_local, sizeof(sle_channel_sounding_iq_report_t), report, len) != EOK) {
-        osal_kfree(report_local);
+    int32_t slot = iq_slot_claim(g_local_iq_slot_busy);
+    if (slot < 0) {
+        g_local_iq_dropped++;
+        osal_printk("IQ_DROP,local,%u\r\n", g_local_iq_dropped);
         return;
     }
-    measure_dis_msg_node_t msg_node = {conn_id, SLEM_MSG_LOCAL_IQ, 0, report_local};
-    ret = sle_measure_dis_msg_add(&msg_node);
-    if (ret != ERRCODE_SUCC) {
-        osal_kfree(report_local);
+    if (memcpy_s(&g_local_iq_slots[slot], sizeof(g_local_iq_slots[slot]),
+                 report, sizeof(*report)) != EOK) {
+        iq_slot_release(g_local_iq_slot_busy, (uint32_t)slot);
+        return;
+    }
+    measure_dis_msg_node_t msg_node = {conn_id, SLEM_MSG_LOCAL_IQ, (uint16_t)slot,
+        &g_local_iq_slots[slot]};
+    if (sle_measure_dis_msg_add(&msg_node) != ERRCODE_SUCC) {
+        iq_slot_release(g_local_iq_slot_busy, (uint32_t)slot);
     }
 }
 
@@ -268,14 +299,14 @@ errcode_t measure_dis_recv_local_iq(measure_dis_msg_node_t *msg_node)
 {
     /* key send to anchor */
     errcode_t ret = measure_dis_proc_local_iq(msg_node->conn_id, (sle_channel_sounding_iq_report_t *)(msg_node->data));
-    osal_kfree(msg_node->data);
+    iq_slot_release(g_local_iq_slot_busy, msg_node->result);
     return ret;
 }
 
 errcode_t measure_dis_recv_remote_iq(measure_dis_msg_node_t *msg_node)
 {
     errcode_t ret = measure_dis_proc_remote_iq(msg_node->conn_id, (sle_channel_sounding_iq_trans_t *)(msg_node->data));
-    osal_kfree(msg_node->data);
+    iq_slot_release(g_remote_iq_slot_busy, msg_node->result);
     return ret;
 }
 
@@ -297,21 +328,24 @@ errcode_t measure_dis_match_msg(measure_dis_msg_node_t *msg_node)
 
 errcode_t measure_dis_remote_iq(uint16_t len, uint8_t *value)
 {
-    UNUSED(len);
-    errcode_t ret = ERRCODE_FAIL;
-    sle_channel_sounding_iq_trans_t *report = NULL;
-    report = (sle_channel_sounding_iq_trans_t *)osal_kmalloc(sizeof(sle_channel_sounding_iq_trans_t), 0);
-    if (report == NULL) {
-        return ERRCODE_MALLOC;
+    if ((value == NULL) || (len != sizeof(sle_channel_sounding_iq_trans_t))) {
+        return ERRCODE_INVALID_PARAM;
     }
-    if (memcpy_s(report, sizeof(sle_channel_sounding_iq_trans_t), value, len) != EOK) {
-        osal_kfree(report);
+    int32_t slot = iq_slot_claim(g_remote_iq_slot_busy);
+    if (slot < 0) {
+        g_remote_iq_dropped++;
+        osal_printk("IQ_DROP,remote,%u\r\n", g_remote_iq_dropped);
+        return ERRCODE_FAIL;
+    }
+    if (memcpy_s(&g_remote_iq_slots[slot], sizeof(g_remote_iq_slots[slot]), value, len) != EOK) {
+        iq_slot_release(g_remote_iq_slot_busy, (uint32_t)slot);
         return ERRCODE_MEMCPY;
     }
-    measure_dis_msg_node_t msg_node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IQ, 0, report};
-    ret = sle_measure_dis_msg_add(&msg_node);
+    measure_dis_msg_node_t msg_node = {g_measure_dis_conn_id, SLEM_MSG_REMOTE_IQ, (uint16_t)slot,
+        &g_remote_iq_slots[slot]};
+    errcode_t ret = sle_measure_dis_msg_add(&msg_node);
     if (ret != ERRCODE_SUCC) {
-        osal_kfree(report);
+        iq_slot_release(g_remote_iq_slot_busy, (uint32_t)slot);
     }
 
     return ret;
