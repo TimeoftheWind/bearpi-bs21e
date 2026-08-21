@@ -150,9 +150,9 @@ errcode_t sle_imu_sensor_init(void)
 errcode_t sle_imu_sensor_read(sle_imu_packet_t *p)
 {
     uint8_t b[RAW_LEN];
-    uint64_t now;
     errcode_t ret;
     if (p == NULL) return ERRCODE_INVALID_PARAM;
+    p->timestamp_us = uapi_tcxo_get_us();
     ret = spi_read(REG_TEMP_DATA1, b, sizeof(b));
     if (ret != ERRCODE_SUCC) {
         osal_printk("IMU SPI sample failed, ret:0x%x\r\n", ret);
@@ -163,7 +163,6 @@ errcode_t sle_imu_sensor_read(sle_imu_packet_t *p)
         osal_printk("IMU MAG sample failed, ret:0x%x\r\n", ret);
         return ret;
     }
-    now = uapi_tcxo_get_us(); p->timestamp_us = now;
     p->ax=(float)i16_be(&b[2])/ACC_LSB_PER_G; p->ay=(float)i16_be(&b[4])/ACC_LSB_PER_G;
     p->az=(float)i16_be(&b[6])/ACC_LSB_PER_G; p->gx=(float)i16_be(&b[8])/GYRO_LSB_PER_DPS;
     p->gy=(float)i16_be(&b[10])/GYRO_LSB_PER_DPS; p->gz=(float)i16_be(&b[12])/GYRO_LSB_PER_DPS;

@@ -31,6 +31,7 @@ static volatile uint8_t g_iq_pending;
 static uint8_t g_iq_data[sizeof(sle_channel_sounding_iq_trans_t)];
 static uint32_t g_iq_data_len;
 static uint32_t g_batch_sequence;
+static uint32_t g_sample_sequence;
 static uint64_t g_imu_tx_not_before_us;
 
 static void imu_ring_push(const sle_imu_packet_t *sample)
@@ -175,6 +176,7 @@ static void *imu_client_task(const char *arg)
                 next_sample_us = now_us + IMU_SAMPLE_PERIOD_US;
             }
             if (sle_imu_sensor_read(&packet) == ERRCODE_SUCC) {
+                packet.sequence = g_sample_sequence++;
                 imu_ring_push(&packet);
             }
         }

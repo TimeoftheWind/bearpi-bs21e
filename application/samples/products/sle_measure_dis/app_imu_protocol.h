@@ -10,6 +10,7 @@
 
 typedef struct {
     uint64_t timestamp_us;
+    uint32_t sequence;
     float ax;
     float ay;
     float az;

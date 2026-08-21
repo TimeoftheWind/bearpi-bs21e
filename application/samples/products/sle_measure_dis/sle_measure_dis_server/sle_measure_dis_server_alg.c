@@ -28,6 +28,7 @@ static uint32_t g_last_distance_calc_ms;
 
 static sle_channel_sounding_iq_report_t g_local_iq_slots[IQ_SLOT_COUNT];
 static sle_channel_sounding_iq_trans_t g_remote_iq_slots[IQ_SLOT_COUNT];
+static uint64_t g_local_iq_arrival_us[IQ_SLOT_COUNT];
 static uint8_t g_local_iq_slot_busy[IQ_SLOT_COUNT];
 static uint8_t g_remote_iq_slot_busy[IQ_SLOT_COUNT];
 static uint32_t g_local_iq_dropped;
@@ -57,6 +58,7 @@ static void iq_slot_release(uint8_t *busy, uint32_t slot)
 measure_dis_stored_iq_data_t g_md_local_iq_data;
 uint8_t g_md_store_local_iq_complete;
 uint8_t g_next_idx;
+static uint64_t g_md_local_iq_measurement_us;
 
 void slem_posalg_set_base_para(slem_alg_para_dis *alg_para, uint8_t key_id)
 {
@@ -66,17 +68,13 @@ void slem_posalg_set_base_para(slem_alg_para_dis *alg_para, uint8_t key_id)
     alg_para->ranging_method = DIS_ALG_MODE;
 }
 
-void measure_dis_print_cal_dis(float dist_first, float dist_ori, float prob, uint32_t time)
+static void measure_dis_queue_cal_dis(float dist_first, uint64_t measurement_timestamp_us,
+    uint64_t result_timestamp_us, uint32_t calculation_time_ms)
 {
-    unused(dist_ori);
-    unused(prob);
     int32_t distance_mm = (int32_t)(dist_first * MEASURE_DIS_NUM_CARRY_1000 +
         ((dist_first >= 0.0f) ? 0.5f : -0.5f));
-    uint32_t magnitude_mm = (distance_mm < 0) ? (uint32_t)(-distance_mm) : (uint32_t)distance_mm;
-    osal_printk(
-        "DIST,%llu,%s%u.%03u,%u\r\n",
-        (unsigned long long)uapi_tcxo_get_us(), (distance_mm < 0) ? "-" : "",
-        magnitude_mm / MEASURE_DIS_NUM_CARRY_1000, magnitude_mm % MEASURE_DIS_NUM_CARRY_1000, time);
+    (void)sle_measure_dis_distance_output_add(measurement_timestamp_us, result_timestamp_us,
+        distance_mm, calculation_time_ms);
 }
 
 static void measure_dis_posalg_set_distance(slem_smoothed_dis_result *dis,
@@ -128,8 +126,9 @@ void measure_dis_posalg_get_distance(measure_dis_profile_msg_dis_t *measure_dis_
     slem_alg_calc_smoothed_dis(&result_dist, &alg_para);
     counter++;
     uint32_t time_end = (uint32_t)uapi_tcxo_get_ms();
-    measure_dis_print_cal_dis(result_dist.dis_smoothed, result_dist.dis_ori,
-                              result_dist.prob, time_end - time_start);
+    uint64_t result_timestamp_us = uapi_tcxo_get_us();
+    measure_dis_queue_cal_dis(result_dist.dis_smoothed, g_md_local_iq_measurement_us,
+        result_timestamp_us, time_end - time_start);
 
     measure_dis_posalg_set_distance(&result_dist, measure_dis_temp);
 }
@@ -269,6 +268,7 @@ void measure_dis_cs_iq_report_cb(uint16_t conn_id, sle_channel_sounding_iq_repor
         osal_printk("IQ_DROP,local,%u\r\n", g_local_iq_dropped);
         return;
     }
+    g_local_iq_arrival_us[slot] = uapi_tcxo_get_us();
     if (memcpy_s(&g_local_iq_slots[slot], sizeof(g_local_iq_slots[slot]),
                  report, sizeof(*report)) != EOK) {
         iq_slot_release(g_local_iq_slot_busy, (uint32_t)slot);
@@ -298,6 +298,7 @@ errcode_t measure_dis_reg_callbacks(void)
 errcode_t measure_dis_recv_local_iq(measure_dis_msg_node_t *msg_node)
 {
     /* key send to anchor */
+    g_md_local_iq_measurement_us = g_local_iq_arrival_us[msg_node->result];
     errcode_t ret = measure_dis_proc_local_iq(msg_node->conn_id, (sle_channel_sounding_iq_report_t *)(msg_node->data));
     iq_slot_release(g_local_iq_slot_busy, msg_node->result);
     return ret;

@@ -53,15 +53,25 @@ uint8_t g_measure_dis_conn_id = SLEM_CONNET_INVAILD;
 osal_event measure_dis_evt;
 unsigned long g_measure_dis_queue;
 measure_dis_msg_node_t g_msg_data;
-osal_event g_imu_output_evt;
+osal_event g_telemetry_output_evt;
 static unsigned long g_imu_output_queue;
-/* Accessed only by the SleImuOutput task; keep CSV buffers off its stack. */
-static char g_imu_csv_line[224];
+static unsigned long g_distance_output_queue;
+/* Accessed only by the SleTelemetry task; keep CSV buffers off its stack. */
+static char g_imu_csv_line[256];
 static char g_imu_csv_values[9][24];
+static uint32_t g_distance_output_sequence;
 
 typedef struct {
     sle_imu_batch_t batch;
 } imu_output_node_t;
+
+typedef struct {
+    uint32_t sequence;
+    uint64_t measurement_timestamp_us;
+    uint64_t result_timestamp_us;
+    int32_t distance_mm;
+    uint32_t calculation_time_ms;
+} distance_output_node_t;
 
 
 measure_dis_server_data_t g_measure_dis_server_data = {
@@ -437,37 +447,89 @@ errcode_t sle_measure_dis_imu_output_add(const sle_imu_batch_t *batch)
         }
         osal_printk("IMU_DROP,%u,output_queue_oldest\r\n", oldest.batch.sequence);
     }
-    (void)osal_event_write(&g_imu_output_evt, IMU_OUTPUT_EVENT);
+    (void)osal_event_write(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT);
     return ERRCODE_SUCC;
 }
 
-void sle_measure_dis_imu_output_proc(void)
+errcode_t sle_measure_dis_distance_output_add(uint64_t measurement_timestamp_us,
+    uint64_t result_timestamp_us, int32_t distance_mm, uint32_t calculation_time_ms)
 {
-    while (osal_msg_queue_get_msg_num(g_imu_output_queue) > 0U) {
-        imu_output_node_t node = {0};
-        uint32_t node_size = sizeof(node);
-        if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
-            return;
+    if (g_distance_output_queue == 0U) {
+        return ERRCODE_FAIL;
+    }
+    distance_output_node_t node = {
+        .sequence = g_distance_output_sequence++,
+        .measurement_timestamp_us = measurement_timestamp_us,
+        .result_timestamp_us = result_timestamp_us,
+        .distance_mm = distance_mm,
+        .calculation_time_ms = calculation_time_ms,
+    };
+    if (osal_msg_queue_write_copy(g_distance_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+        distance_output_node_t oldest;
+        uint32_t oldest_size = sizeof(oldest);
+        if (osal_msg_queue_read_copy(g_distance_output_queue, &oldest, &oldest_size, 0) != OSAL_SUCCESS ||
+            osal_msg_queue_write_copy(g_distance_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+            return ERRCODE_FAIL;
         }
-        for (uint16_t i = 0; i < node.batch.sample_count; i++) {
-            const sle_imu_packet_t *p = &node.batch.samples[i];
-            imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6);
-            imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6);
-            imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6);
-            imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3);
-            imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3);
-            imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3);
-            imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3);
-            imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3);
-            imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
-            int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
-                "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
-                (unsigned long long)p->timestamp_us, g_imu_csv_values[0], g_imu_csv_values[1],
-                g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
-                g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8]);
-            if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
-                osal_printk("%s", g_imu_csv_line);
-            }
+    }
+    (void)osal_event_write(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT);
+    return ERRCODE_SUCC;
+}
+
+static void sle_measure_dis_distance_output_one(void)
+{
+    distance_output_node_t node = {0};
+    uint32_t node_size = sizeof(node);
+    if (osal_msg_queue_read_copy(g_distance_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
+        return;
+    }
+    int64_t distance_mm = node.distance_mm;
+    uint64_t magnitude_mm = (distance_mm < 0) ? (uint64_t)(-distance_mm) : (uint64_t)distance_mm;
+    osal_printk("DIST,%u,%llu,%llu,%s%llu.%03llu,%u\r\n", node.sequence,
+        (unsigned long long)node.measurement_timestamp_us,
+        (unsigned long long)node.result_timestamp_us,
+        (distance_mm < 0) ? "-" : "", (unsigned long long)(magnitude_mm / 1000U),
+        (unsigned long long)(magnitude_mm % 1000U), node.calculation_time_ms);
+}
+
+static void sle_measure_dis_imu_output_one(void)
+{
+    imu_output_node_t node = {0};
+    uint32_t node_size = sizeof(node);
+    if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
+        return;
+    }
+    for (uint16_t i = 0; i < node.batch.sample_count; i++) {
+        const sle_imu_packet_t *p = &node.batch.samples[i];
+        imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6);
+        imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6);
+        imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6);
+        imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3);
+        imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3);
+        imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3);
+        imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3);
+        imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3);
+        imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
+        int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
+            "IMU,%u,%u,%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
+            node.batch.sequence, p->sequence, (unsigned long long)p->timestamp_us,
+            g_imu_csv_values[0], g_imu_csv_values[1],
+            g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
+            g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8]);
+        if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
+            osal_printk("%s", g_imu_csv_line);
+        }
+    }
+}
+
+void sle_measure_dis_telemetry_output_proc(void)
+{
+    while ((osal_msg_queue_get_msg_num(g_distance_output_queue) > 0U) ||
+           (osal_msg_queue_get_msg_num(g_imu_output_queue) > 0U)) {
+        if (osal_msg_queue_get_msg_num(g_distance_output_queue) > 0U) {
+            sle_measure_dis_distance_output_one();
+        } else {
+            sle_measure_dis_imu_output_one();
         }
     }
 }
@@ -510,10 +572,12 @@ void sle_measure_dis_init(void)
         osal_printk("osal_queue_init init failed \r\n");
         return;
     }
-    if ((osal_event_init(&g_imu_output_evt) != ERRCODE_SUCC) ||
+    if ((osal_event_init(&g_telemetry_output_evt) != ERRCODE_SUCC) ||
         (osal_msg_queue_create("imu_output_queue", IMU_OUTPUT_QUEUE_SIZE, &g_imu_output_queue,
-                               0, sizeof(imu_output_node_t)) != ERRCODE_SUCC)) {
-        osal_printk("imu output queue init failed\r\n");
+                               0, sizeof(imu_output_node_t)) != ERRCODE_SUCC) ||
+        (osal_msg_queue_create("distance_output_queue", DIST_OUTPUT_QUEUE_SIZE, &g_distance_output_queue,
+                               0, sizeof(distance_output_node_t)) != ERRCODE_SUCC)) {
+        osal_printk("telemetry output queue init failed\r\n");
     }
 }
 

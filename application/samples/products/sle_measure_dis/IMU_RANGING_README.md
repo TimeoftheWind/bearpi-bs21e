@@ -26,25 +26,25 @@ In HiSpark configuration select:
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER=y`
 - `SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT=n`
 
-The Server gives IQ/distance processing its own higher-priority task. IMU batches are expanded by a separate
-lower-priority task, which emits one CSV record per IMU sample on the same debug serial port. Each record has
-exactly these fields:
+The Server gives IQ/distance processing its own higher-priority task. Distance results and IMU batches enter
+separate fixed-size queues and are emitted by one lower-priority telemetry task, with distance results taking
+priority. This prevents concurrent log writers from corrupting CSV records. Each IMU record has these fields:
 
 ```text
-timestamp_us,ax,ay,az,gx,gy,gz,mx,my,mz
+IMU,batch_sequence,sample_sequence,timestamp_us,ax,ay,az,gx,gy,gz,mx,my,mz
 ```
 
-Distance records are separate lines:
+Distance records contain the local IQ report arrival time and algorithm result time in the Server clock domain:
 
 ```text
-DIST,timestamp_us,distance_m,calculation_time_ms
+DIST,distance_sequence,measurement_timestamp_us,result_timestamp_us,distance_m,calculation_time_ms
 ```
 
 Client-side ring-buffer overwrites are reported as `IMU_DROP,batch_sequence,dropped_sample_count`.
 
 ## Units and first hardware checks
 
-- timestamp: microseconds from the battery board TCXO since boot
+- IMU timestamp: sensor-read start time in microseconds from the battery board TCXO since boot
 - ax/ay/az: g
 - gx/gy/gz: degrees per second
 - mx/my/mz: QMC5883P raw counts pending board-specific calibration

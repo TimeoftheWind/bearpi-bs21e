@@ -40,13 +40,13 @@ void sle_measure_dis_server_task(void)
     }
 }
 
-static void *sle_measure_dis_imu_output_task(const char *arg)
+static void *sle_measure_dis_telemetry_output_task(const char *arg)
 {
     unused(arg);
     while (1) {
-        (void)osal_event_read(&g_imu_output_evt, IMU_OUTPUT_EVENT,
+        (void)osal_event_read(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT,
                               OSAL_WAIT_FOREVER, OSAL_WAITMODE_OR | OSAL_WAITMODE_CLR);
-        sle_measure_dis_imu_output_proc();
+        sle_measure_dis_telemetry_output_proc();
     }
     return NULL;
 }
@@ -83,8 +83,8 @@ static void measure_dis_entry(void)
         osal_kfree(task_handle);
     }
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
-    task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_imu_output_task,
-                                      0, "SleImuOutput", IMU_OUTPUT_TASK_STACK_SIZE);
+    task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_telemetry_output_task,
+                                      0, "SleTelemetry", IMU_OUTPUT_TASK_STACK_SIZE);
     if (task_handle != NULL) {
         osal_kthread_set_priority(task_handle, TASK_PRIORITY_IMU_OUTPUT);
         osal_kfree(task_handle);
