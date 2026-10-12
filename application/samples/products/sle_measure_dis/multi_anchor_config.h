@@ -1,0 +1,26 @@
+#ifndef MULTI_ANCHOR_CONFIG_H
+#define MULTI_ANCHOR_CONFIG_H
+
+/* Address suffixes are decimal and must be unique: 05, 06, 07, 08, 09. */
+#define MAX_SERVERS 5U
+#define SLE_MEASURE_1HZ 2U
+#define IMU_SERVER_SUFFIX 5U
+#ifndef MEASURE_SERVER_SUFFIX
+#ifdef CONFIG_SAMPLE_MEASURE_ANCHOR_SUFFIX
+#define MEASURE_SERVER_SUFFIX CONFIG_SAMPLE_MEASURE_ANCHOR_SUFFIX
+#else
+#define MEASURE_SERVER_SUFFIX 5U
+#endif
+#endif
+#define IMU_BATCH_SAMPLE_COUNT 4U /* 20 Hz sampling / 4 = target 5 batches/s */
+#define IMU_SAMPLE_RING_SIZE 128U /* approximately 6.4 seconds, not unlimited storage */
+#define IQ_TX_QUEUE_SIZE 15U
+#define TELEMETRY_SEND_GUARD_US 10000ULL
+#define TELEMETRY_IQ_MAX_AGE_US 900000ULL
+#define IMU_ACK_TIMEOUT_US 500000ULL
+#define IMU_BATCH_MAX_AGE_US 6000000ULL
+
+#if MEASURE_SERVER_SUFFIX < 5 || MEASURE_SERVER_SUFFIX > 9
+#error "MEASURE_SERVER_SUFFIX must be between 5 and 9"
+#endif
+#endif

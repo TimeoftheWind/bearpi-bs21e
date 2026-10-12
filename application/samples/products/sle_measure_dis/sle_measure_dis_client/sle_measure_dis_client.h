@@ -53,14 +53,22 @@ typedef struct server_data {
         }                                                                                        \
     } while (0)
 
-int measure_dis_client_send_now(uint32_t type, const uint8_t *data, uint32_t data_len);
-errcode_t sle_imu_tx_enqueue_iq(const uint8_t *data, uint32_t data_len);
+typedef struct {
+    uint16_t conn_id;
+    uint16_t slot;
+    uint32_t generation;
+} measure_dis_link_token_t;
+
+int measure_dis_client_send_now(const measure_dis_link_token_t *token,
+    uint32_t type, const uint8_t *data, uint32_t data_len);
+errcode_t sle_imu_tx_enqueue_iq(uint16_t conn_id, const uint8_t *data, uint32_t data_len);
+bool measure_dis_client_link_token(uint16_t conn_id, measure_dis_link_token_t *token);
+bool measure_dis_client_imu_token(measure_dis_link_token_t *token);
+bool measure_dis_client_token_ready(const measure_dis_link_token_t *token);
+void sle_imu_tx_ack(const sle_imu_ack_t *ack);
 int measure_dis_client_init(void);
 int measure_dis_start_scan(void);
 void measure_dis_client_process(void);
-bool measure_dis_client_is_ready(void);
-extern uint8_t g_measure_dis_conn_id;
-extern measure_dis_server_data_t g_measure_dis_server_data;
 void sle_imu_client_start(void);
 
 #endif
