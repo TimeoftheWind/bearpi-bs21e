@@ -2,17 +2,17 @@
 #define APP_IMU_PROTOCOL_H
 
 #include <stdint.h>
+#include "multi_anchor_config.h"
 
 #define SLEM_PROFILE_MSG_IMU 0xFFFFFFEBU
 #define SLEM_PROFILE_MSG_IMU_BATCH 0xFFFFFFECU
-#define SLE_IMU_BATCH_SAMPLES 4U
-#define SLE_IMU_RING_CAPACITY 32U
+#define SLEM_PROFILE_MSG_IMU_ACK 0xFFFFFFEDU
+#define SLE_IMU_BATCH_SAMPLES IMU_BATCH_SAMPLE_COUNT
+#define SLE_IMU_RING_CAPACITY IMU_SAMPLE_RING_SIZE
 
 typedef struct {
     uint64_t timestamp_us;
-    float roll;
-    float pitch;
-    float yaw;
+    uint32_t sequence;
     float ax;
     float ay;
     float az;
@@ -22,11 +22,6 @@ typedef struct {
     float mx;
     float my;
     float mz;
-    float q0;
-    float q1;
-    float q2;
-    float q3;
-    float temp;
 } sle_imu_packet_t;
 
 typedef struct {
@@ -35,5 +30,12 @@ typedef struct {
     uint16_t dropped_samples;
     sle_imu_packet_t samples[SLE_IMU_BATCH_SAMPLES];
 } sle_imu_batch_t;
+
+/* ACK identifies both sequence and acquisition time to reject stale notifications. */
+typedef struct {
+    uint64_t last_timestamp_us;
+    uint32_t sequence;
+    uint32_t reserved;
+} sle_imu_ack_t;
 
 #endif

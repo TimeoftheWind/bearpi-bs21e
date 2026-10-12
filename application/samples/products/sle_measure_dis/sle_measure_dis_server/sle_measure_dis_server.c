@@ -26,14 +26,28 @@
 
 static uint8_t g_stack_enable_status = 0;
 
-static void imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
+static bool imu_float_text(char *out, size_t out_len, float value, uint32_t decimals)
 {
+    /* Reject NaN/Infinity and out-of-domain values before integer conversion. */
+    if (value != value || value > 1000000.0f || value < -1000000.0f) {
+        return false;
+    }
     uint32_t scale = (decimals == 6U) ? 1000000U : 1000U;
     int64_t scaled = (int64_t)(value * (float)scale + ((value >= 0.0f) ? 0.5f : -0.5f));
     uint64_t magnitude = (scaled < 0) ? (uint64_t)(-scaled) : (uint64_t)scaled;
-    (void)snprintf(out, out_len, "%s%llu.%0*llu", (scaled < 0) ? "-" : "",
-        (unsigned long long)(magnitude / scale), (int)decimals,
-        (unsigned long long)(magnitude % scale));
+    int n;
+    if (decimals == 6U) {
+        n = snprintf(out, out_len, "%s%llu.%06llu", (scaled < 0) ? "-" : "",
+            (unsigned long long)(magnitude / scale),
+            (unsigned long long)(magnitude % scale));
+    } else if (decimals == 3U) {
+        n = snprintf(out, out_len, "%s%llu.%03llu", (scaled < 0) ? "-" : "",
+            (unsigned long long)(magnitude / scale),
+            (unsigned long long)(magnitude % scale));
+    } else {
+        return false;
+    }
+    return (n > 0) && ((size_t)n < out_len);
 }
 
 /* sle server handle */
@@ -46,22 +60,36 @@ static uint16_t g_property_handle = 0;
 /* UUID只支持2字节和16字节 */
 #define SLEM_UUID_LEN SLE_UUID_LEN
 #define SLEM_CONNET_INVAILD 0xFF
-uint8_t g_measure_dis_server_addr[SLE_ADDR_LEN] = { 1, 1, 1, 1, 1, 1 };
+uint8_t g_measure_dis_server_addr[SLE_ADDR_LEN] = { 1, 1, 1, 1, 1, MEASURE_SERVER_SUFFIX };
 uint8_t g_measure_dis_client_addr[SLE_ADDR_LEN] = { 2, 2, 2, 2, 2, 2 };
 uint8_t g_measure_dis_conn_id = SLEM_CONNET_INVAILD;
 
 osal_event measure_dis_evt;
 unsigned long g_measure_dis_queue;
 measure_dis_msg_node_t g_msg_data;
-osal_event g_imu_output_evt;
+osal_event g_telemetry_output_evt;
 static unsigned long g_imu_output_queue;
-/* Accessed only by the SleImuOutput task; keep CSV buffers off its stack. */
-static char g_imu_csv_line[384];
-static char g_imu_csv_values[17][24];
+static unsigned long g_distance_output_queue;
+/* Accessed only by the SleTelemetry task; keep CSV buffers off its stack. */
+static char g_imu_csv_line[256];
+static char g_imu_csv_values[9][24];
+static uint32_t g_distance_output_sequence;
+static sle_imu_ack_t g_last_imu;
+static bool g_last_imu_valid;
+static bool g_last_imu_written;
+static bool g_imu_ack_pending;
 
 typedef struct {
-    sle_imu_batch_t *batch;
+    sle_imu_batch_t batch;
 } imu_output_node_t;
+
+typedef struct {
+    uint32_t sequence;
+    uint64_t measurement_timestamp_us;
+    uint64_t result_timestamp_us;
+    int32_t distance_mm;
+    uint32_t calculation_time_ms;
+} distance_output_node_t;
 
 
 measure_dis_server_data_t g_measure_dis_server_data = {
@@ -181,6 +209,10 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
             ret = ERRCODE_INVALID_PARAM;
             break;
         case SLEM_PROFILE_MSG_IMU_BATCH: {
+            if (MEASURE_SERVER_SUFFIX != IMU_SERVER_SUFFIX) {
+                ret = ERRCODE_INVALID_PARAM;
+                break;
+            }
             if (slem_profile_msg->len != sizeof(sle_imu_batch_t)) {
                 osal_printk("invalid IMU batch length:%u\r\n", slem_profile_msg->len);
                 break;
@@ -190,20 +222,7 @@ void measure_dis_server_msg_proc(uint8_t *data, uint16_t data_len)
                 osal_printk("invalid IMU batch count:%u\r\n", batch->sample_count);
                 break;
             }
-            sle_imu_batch_t *batch_copy = (sle_imu_batch_t *)osal_kmalloc(sizeof(*batch_copy), 0);
-            if (batch_copy == NULL) {
-                ret = ERRCODE_MALLOC;
-                break;
-            }
-            if (memcpy_s(batch_copy, sizeof(*batch_copy), batch, sizeof(*batch_copy)) != EOK) {
-                osal_kfree(batch_copy);
-                ret = ERRCODE_MEMCPY;
-                break;
-            }
-            ret = sle_measure_dis_imu_output_add(batch_copy);
-            if (ret != ERRCODE_SUCC) {
-                osal_kfree(batch_copy);
-            }
+            ret = sle_measure_dis_imu_output_add(batch);
             break;
         }
         default:
@@ -431,58 +450,158 @@ void sle_measure_dis_msg_proc(void)
     }
 }
 
-errcode_t sle_measure_dis_imu_output_add(sle_imu_batch_t *batch)
+errcode_t sle_measure_dis_imu_output_add(const sle_imu_batch_t *batch)
 {
-    imu_output_node_t node = { .batch = batch };
-    if ((batch == NULL) || (g_imu_output_queue == 0U) ||
-        (osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) ||
-        (osal_event_write(&g_imu_output_evt, IMU_OUTPUT_EVENT) != OSAL_SUCCESS)) {
+    if ((batch == NULL) || (g_imu_output_queue == 0U) || batch->sample_count == 0U ||
+        batch->sample_count > SLE_IMU_BATCH_SAMPLES) {
         return ERRCODE_FAIL;
     }
+    sle_imu_ack_t key = {
+        .sequence = batch->sequence,
+        .last_timestamp_us = batch->samples[batch->sample_count - 1U].timestamp_us,
+    };
+    unsigned int irq = osal_irq_lock();
+    bool duplicate = g_last_imu_valid && key.sequence == g_last_imu.sequence &&
+        key.last_timestamp_us == g_last_imu.last_timestamp_us;
+    bool busy = g_last_imu_valid && !g_last_imu_written;
+    if (duplicate && g_last_imu_written) {
+        g_imu_ack_pending = true;
+    }
+    osal_irq_restore(irq);
+    if (duplicate) {
+        (void)osal_event_write(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT);
+        return ERRCODE_SUCC;
+    }
+    if (busy) {
+        return ERRCODE_FAIL;
+    }
+    imu_output_node_t node;
+    if (memcpy_s(&node.batch, sizeof(node.batch), batch, sizeof(*batch)) != EOK) {
+        return ERRCODE_MEMCPY;
+    }
+    irq = osal_irq_lock();
+    g_last_imu = key;
+    g_last_imu_valid = true;
+    g_last_imu_written = false;
+    g_imu_ack_pending = false;
+    osal_irq_restore(irq);
+    if (osal_msg_queue_write_copy(g_imu_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+        irq = osal_irq_lock();
+        g_last_imu_valid = false;
+        osal_irq_restore(irq);
+        return ERRCODE_FAIL; /* No ACK: Client retains this batch for retry. */
+    }
+    (void)osal_event_write(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT);
     return ERRCODE_SUCC;
 }
 
-void sle_measure_dis_imu_output_proc(void)
+errcode_t sle_measure_dis_distance_output_add(uint64_t measurement_timestamp_us,
+    uint64_t result_timestamp_us, int32_t distance_mm, uint32_t calculation_time_ms)
 {
-    while (osal_msg_queue_get_msg_num(g_imu_output_queue) > 0U) {
-        imu_output_node_t node = {0};
-        uint32_t node_size = sizeof(node);
-        if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
-            return;
+    if (g_distance_output_queue == 0U) {
+        return ERRCODE_FAIL;
+    }
+    distance_output_node_t node = {
+        .sequence = g_distance_output_sequence++,
+        .measurement_timestamp_us = measurement_timestamp_us,
+        .result_timestamp_us = result_timestamp_us,
+        .distance_mm = distance_mm,
+        .calculation_time_ms = calculation_time_ms,
+    };
+    if (osal_msg_queue_write_copy(g_distance_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+        distance_output_node_t oldest;
+        uint32_t oldest_size = sizeof(oldest);
+        if (osal_msg_queue_read_copy(g_distance_output_queue, &oldest, &oldest_size, 0) != OSAL_SUCCESS ||
+            osal_msg_queue_write_copy(g_distance_output_queue, &node, sizeof(node), 0) != OSAL_SUCCESS) {
+            return ERRCODE_FAIL;
         }
-        if (node.batch != NULL) {
-            for (uint16_t i = 0; i < node.batch->sample_count; i++) {
-                const sle_imu_packet_t *p = &node.batch->samples[i];
-                imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->roll, 3);
-                imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->pitch, 3);
-                imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->yaw, 3);
-                imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->ax, 6);
-                imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->ay, 6);
-                imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->az, 6);
-                imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->gx, 3);
-                imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->gy, 3);
-                imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->gz, 3);
-                imu_float_text(g_imu_csv_values[9], sizeof(g_imu_csv_values[9]), p->mx, 3);
-                imu_float_text(g_imu_csv_values[10], sizeof(g_imu_csv_values[10]), p->my, 3);
-                imu_float_text(g_imu_csv_values[11], sizeof(g_imu_csv_values[11]), p->mz, 3);
-                imu_float_text(g_imu_csv_values[12], sizeof(g_imu_csv_values[12]), p->q0, 6);
-                imu_float_text(g_imu_csv_values[13], sizeof(g_imu_csv_values[13]), p->q1, 6);
-                imu_float_text(g_imu_csv_values[14], sizeof(g_imu_csv_values[14]), p->q2, 6);
-                imu_float_text(g_imu_csv_values[15], sizeof(g_imu_csv_values[15]), p->q3, 6);
-                imu_float_text(g_imu_csv_values[16], sizeof(g_imu_csv_values[16]), p->temp, 3);
-                int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
-                    "%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
-                    (unsigned long long)p->timestamp_us, g_imu_csv_values[0], g_imu_csv_values[1],
-                    g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
-                    g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8], g_imu_csv_values[9],
-                    g_imu_csv_values[10], g_imu_csv_values[11], g_imu_csv_values[12], g_imu_csv_values[13],
-                    g_imu_csv_values[14], g_imu_csv_values[15], g_imu_csv_values[16]);
-                if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
-                    osal_printk("%s", g_imu_csv_line);
-                }
-            }
-            osal_kfree(node.batch);
+    }
+    (void)osal_event_write(&g_telemetry_output_evt, TELEMETRY_OUTPUT_EVENT);
+    return ERRCODE_SUCC;
+}
+
+static void sle_measure_dis_distance_output_one(void)
+{
+    distance_output_node_t node = {0};
+    uint32_t node_size = sizeof(node);
+    if (osal_msg_queue_read_copy(g_distance_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
+        return;
+    }
+    int64_t distance_mm = node.distance_mm;
+    uint64_t magnitude_mm = (distance_mm < 0) ? (uint64_t)(-distance_mm) : (uint64_t)distance_mm;
+    osal_printk("DIST,%u,%llu,%llu,%s%llu.%03llu,%u\r\n", node.sequence,
+        (unsigned long long)node.measurement_timestamp_us,
+        (unsigned long long)node.result_timestamp_us,
+        (distance_mm < 0) ? "-" : "", (unsigned long long)(magnitude_mm / 1000U),
+        (unsigned long long)(magnitude_mm % 1000U), node.calculation_time_ms);
+}
+
+static void sle_measure_dis_imu_output_one(void)
+{
+    imu_output_node_t node = {0};
+    uint32_t node_size = sizeof(node);
+    if (osal_msg_queue_read_copy(g_imu_output_queue, &node, &node_size, 0) != ERRCODE_SUCC) {
+        return;
+    }
+    bool all_written = true;
+    if (node.batch.dropped_samples != 0) {
+        osal_printk("IMU_DROP,%u,client_ring:%u\r\n", node.batch.sequence,
+            (unsigned int)node.batch.dropped_samples);
+    }
+    for (uint16_t i = 0; i < node.batch.sample_count; i++) {
+        const sle_imu_packet_t *p = &node.batch.samples[i];
+        bool fields_ok =
+            imu_float_text(g_imu_csv_values[0], sizeof(g_imu_csv_values[0]), p->ax, 6) &&
+            imu_float_text(g_imu_csv_values[1], sizeof(g_imu_csv_values[1]), p->ay, 6) &&
+            imu_float_text(g_imu_csv_values[2], sizeof(g_imu_csv_values[2]), p->az, 6) &&
+            imu_float_text(g_imu_csv_values[3], sizeof(g_imu_csv_values[3]), p->gx, 3) &&
+            imu_float_text(g_imu_csv_values[4], sizeof(g_imu_csv_values[4]), p->gy, 3) &&
+            imu_float_text(g_imu_csv_values[5], sizeof(g_imu_csv_values[5]), p->gz, 3) &&
+            imu_float_text(g_imu_csv_values[6], sizeof(g_imu_csv_values[6]), p->mx, 3) &&
+            imu_float_text(g_imu_csv_values[7], sizeof(g_imu_csv_values[7]), p->my, 3) &&
+            imu_float_text(g_imu_csv_values[8], sizeof(g_imu_csv_values[8]), p->mz, 3);
+        if (!fields_ok) {
+            all_written = false;
+            continue;
         }
+        int n = snprintf(g_imu_csv_line, sizeof(g_imu_csv_line),
+            "IMU,%u,%u,%llu,%s,%s,%s,%s,%s,%s,%s,%s,%s\r\n",
+            node.batch.sequence, p->sequence, (unsigned long long)p->timestamp_us,
+            g_imu_csv_values[0], g_imu_csv_values[1],
+            g_imu_csv_values[2], g_imu_csv_values[3], g_imu_csv_values[4], g_imu_csv_values[5],
+            g_imu_csv_values[6], g_imu_csv_values[7], g_imu_csv_values[8]);
+        if ((n > 0) && ((size_t)n < sizeof(g_imu_csv_line))) {
+            osal_printk("%s", g_imu_csv_line);
+        } else {
+            all_written = false;
+        }
+    }
+    unsigned int irq = osal_irq_lock();
+    g_last_imu_written = all_written;
+    g_last_imu_valid = all_written;
+    g_imu_ack_pending = all_written;
+    osal_irq_restore(irq);
+}
+
+void sle_measure_dis_telemetry_output_proc(void)
+{
+    while ((osal_msg_queue_get_msg_num(g_distance_output_queue) > 0U) ||
+           (osal_msg_queue_get_msg_num(g_imu_output_queue) > 0U)) {
+        if (osal_msg_queue_get_msg_num(g_distance_output_queue) > 0U) {
+            sle_measure_dis_distance_output_one();
+        } else {
+            sle_measure_dis_imu_output_one();
+        }
+    }
+    unsigned int irq = osal_irq_lock();
+    bool pending = g_imu_ack_pending;
+    sle_imu_ack_t ack = g_last_imu;
+    g_imu_ack_pending = false;
+    osal_irq_restore(irq);
+    if (pending && g_measure_dis_conn_id != SLEM_CONNET_INVAILD) {
+        /* A retransmitted batch requests another ACK if this notification is lost. */
+        (void)measure_dis_server_write_client(SLEM_PROFILE_MSG_IMU_ACK,
+            (uint8_t *)&ack, sizeof(ack));
     }
 }
 
@@ -499,10 +618,7 @@ errcode_t sle_measure_dis_msg_add(measure_dis_msg_node_t *msg)
             ret = ERRCODE_FAIL;
             break;
         }
-        if (osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT) != OSAL_SUCCESS) {
-            ret = ERRCODE_FAIL;
-            break;
-        }
+        (void)osal_event_write(&measure_dis_evt, MEASURE_DIS_MSG_EVENT);
         ret = ERRCODE_SUCC;
     } while (0);
 
@@ -527,10 +643,12 @@ void sle_measure_dis_init(void)
         osal_printk("osal_queue_init init failed \r\n");
         return;
     }
-    if ((osal_event_init(&g_imu_output_evt) != ERRCODE_SUCC) ||
+    if ((osal_event_init(&g_telemetry_output_evt) != ERRCODE_SUCC) ||
         (osal_msg_queue_create("imu_output_queue", IMU_OUTPUT_QUEUE_SIZE, &g_imu_output_queue,
-                               0, sizeof(imu_output_node_t)) != ERRCODE_SUCC)) {
-        osal_printk("imu output queue init failed\r\n");
+                               0, sizeof(imu_output_node_t)) != ERRCODE_SUCC) ||
+        (osal_msg_queue_create("distance_output_queue", DIST_OUTPUT_QUEUE_SIZE, &g_distance_output_queue,
+                               0, sizeof(distance_output_node_t)) != ERRCODE_SUCC)) {
+        osal_printk("telemetry output queue init failed\r\n");
     }
 }
 
@@ -539,7 +657,8 @@ int measure_dis_server_init(void)
     uint32_t ret = ERRCODE_SLE_SUCCESS;
     uint8_t measure_dis_name[SLE_NAME_MAX_LEN] = {'s', 'l', 'e', 'm', '-', 's', '\0'};
     sle_measure_dis_init();
-    osal_printk("START SERVER INIT .\r\n");
+    osal_printk("START SERVER INIT anchor:%u,range:1Hz,imu:%u\r\n",
+        (unsigned int)MEASURE_SERVER_SUFFIX, MEASURE_SERVER_SUFFIX == IMU_SERVER_SUFFIX);
     measure_dis_protocol_stack_init(g_measure_dis_server_addr, measure_dis_name);
     measure_dis_reg_callbacks();
     ret = measure_dis_server_add();

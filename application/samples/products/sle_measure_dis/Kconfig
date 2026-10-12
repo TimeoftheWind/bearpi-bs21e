@@ -11,3 +11,10 @@ choice
     config SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT
         bool "Enable SLE MEASURE_DIS Client sample."
 endchoice
+
+if SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER
+config SAMPLE_MEASURE_ANCHOR_SUFFIX
+    int "Server address suffix (5 receives IMU; others range only)"
+    range 5 9
+    default 5
+endif

@@ -14,9 +14,13 @@
 #include "cmsis_os2.h"
 #include "sle_measure_dis_client_slem.h"
 
-measure_dis_stored_iq_data_t g_local_iq_data;
-uint8_t g_next_idx;
-uint8_t g_store_local_iq_complete;
+typedef struct {
+    sle_channel_sounding_iq_trans_t data;
+    measure_dis_link_token_t token;
+    uint8_t next_idx;
+    bool initialized;
+} iq_assembly_t;
+static iq_assembly_t g_iq_assembly[MAX_SERVERS];
 
 uint8_t g_iq_debug_flag = 0;
 void measure_dis_print_iq_data(uint8_t num, uint8_t role, sle_channel_sounding_iq_trans_t *report)
@@ -39,31 +43,35 @@ void measure_dis_print_iq_data(uint8_t num, uint8_t role, sle_channel_sounding_i
     }
 }
 
-errcode_t measure_dis_store_local_iq(sle_channel_sounding_iq_report_t *report)
+static errcode_t measure_dis_store_local_iq(iq_assembly_t *assembly,
+    const measure_dis_link_token_t *token, sle_channel_sounding_iq_report_t *report)
 {
+    sle_channel_sounding_iq_trans_t *data = &assembly->data;
     if (report->report_idx == 0) {
-        g_local_iq_data.samp_cnt = 0;
-        g_local_iq_data.rssi = report->rssi[0];
-        g_local_iq_data.es_sn = report->es_sn;
-        g_local_iq_data.timestamp_sn = report->timestamp_sn;
+        *data = (sle_channel_sounding_iq_trans_t){0};
+        data->rssi = report->rssi[0];
+        data->es_sn = report->es_sn;
+        data->timestamp_sn = report->timestamp_sn;
+        assembly->token = *token;
+        assembly->initialized = true;
 #if (defined(GLE_CS_MODE3_SUPPORT))
-        g_local_iq_data.tof_result = report->tof_result;
+        data->tof_result = report->tof_result;
 #endif
-        g_next_idx = 0;
+        assembly->next_idx = 0;
     }
-    if ((report->report_idx >= MEASURE_DIS_IQ_REPORT_CNT_MAX || report->timestamp_sn != g_local_iq_data.timestamp_sn) ||
-        (g_next_idx != report->report_idx)) {
-        osal_printk("SLEM STORE LOCAL IQ FAIL. report_idx:%d, timestamp:%d, g_next_idx:%d. \r\n",
-                    report->report_idx, report->timestamp_sn, g_next_idx);
+    if (!assembly->initialized || assembly->token.generation != token->generation ||
+        report->report_idx >= MEASURE_DIS_IQ_REPORT_CNT_MAX || report->samp_cnt > SLE_CS_IQ_REPORT_COUNT ||
+        report->timestamp_sn != data->timestamp_sn || assembly->next_idx != report->report_idx ||
+        (unsigned int)data->samp_cnt + report->samp_cnt > IQ_DATA_MAX) {
         return ERRCODE_INVALID_PARAM;
     }
-    g_local_iq_data.samp_cnt += report->samp_cnt;
-    uint8_t offset = report->report_idx * SLE_CS_IQ_REPORT_COUNT;
+    data->samp_cnt += report->samp_cnt;
+    unsigned int offset = report->report_idx * SLE_CS_IQ_REPORT_COUNT;
     for (uint8_t i = 0; i < report->samp_cnt; i++) {
-        g_local_iq_data.data[offset + i].i_data = report->i_data[i];
-        g_local_iq_data.data[offset + i].q_data = report->q_data[i];
+        data->data[offset + i].i_data = report->i_data[i];
+        data->data[offset + i].q_data = report->q_data[i];
     }
-    g_next_idx = report->report_idx + 1;
+    assembly->next_idx = report->report_idx + 1;
 
 #if (defined(GLE_CS_MODE3_SUPPORT))
     osal_printk("local tof_result = %d.%03d \r\n", report->tof_result / MEASURE_DIS_NUM_CARRY_1000,
@@ -75,19 +83,23 @@ errcode_t measure_dis_store_local_iq(sle_channel_sounding_iq_report_t *report)
 
 errcode_t measure_dis_recv_local_iq(uint16_t conn_id, sle_channel_sounding_iq_report_t *report)
 {
-    osal_printk("enter slem_recv_local_iq conn_id:%d. \r\n", conn_id);
+    measure_dis_link_token_t token;
+    if (report == NULL || !measure_dis_client_link_token(conn_id, &token)) {
+        return ERRCODE_INVALID_PARAM;
+    }
+    iq_assembly_t *assembly = &g_iq_assembly[token.slot];
     errcode_t ret = ERRCODE_SUCC;
 
-    ret = measure_dis_store_local_iq(report);
+    ret = measure_dis_store_local_iq(assembly, &token, report);
     if (ret != ERRCODE_SUCC) {
         return ERRCODE_INVALID_PARAM;
     }
 
     if (report->report_idx + 1 == MEASURE_DIS_IQ_REPORT_CNT_MAX) {
         /* 如果是钥匙则发送给从锚点 */
-        measure_dis_print_iq_data(0, 0, (sle_channel_sounding_iq_trans_t *)(&g_local_iq_data));
-        (void)sle_imu_tx_enqueue_iq((const uint8_t *)&g_local_iq_data,
-                                    sizeof(sle_channel_sounding_iq_trans_t));
+        ret = sle_imu_tx_enqueue_iq(conn_id, (const uint8_t *)&assembly->data,
+                                    sizeof(assembly->data));
+        assembly->initialized = false;
     }
     return ret;
 }
