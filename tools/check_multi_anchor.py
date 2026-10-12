@@ -29,6 +29,8 @@ for role in ("CLIENT", "SERVER"):
     run(flags + ["-fsyntax-only", "-DCONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_" + role,
                  "-include", str(ROOT / "tests/host_app_init.h"),
                  str(SAMPLE / "sle_measure_dis.c")])
+run(flags + ["-fsyntax-only", "-DCONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER", "-DMEASURE_SERVER_SUFFIX=6",
+             "-include", str(ROOT / "tests/host_app_init.h"), str(SAMPLE / "sle_measure_dis.c")])
 with tempfile.TemporaryDirectory(prefix="multi-anchor-check-") as temp:
     for name in ("client", "server"):
         source = ROOT / ("tests/multi_anchor_" + name + "_test.c")

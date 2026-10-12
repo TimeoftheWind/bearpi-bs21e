@@ -50,6 +50,19 @@ static void *sle_measure_dis_telemetry_output_task(const char *arg)
     }
     return NULL;
 }
+
+#if MEASURE_SERVER_SUFFIX == IMU_SERVER_SUFFIX
+static void *sle_measure_dis_imu_ack_task(const char *arg)
+{
+    unused(arg);
+    while (1) {
+        (void)osal_event_read(&g_imu_ack_evt, TELEMETRY_OUTPUT_EVENT,
+            20, OSAL_WAITMODE_OR | OSAL_WAITMODE_CLR);
+        sle_measure_dis_imu_ack_proc();
+    }
+    return NULL;
+}
+#endif
 #elif defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT)
 void sle_measure_dis_client_task(void)
 {
@@ -68,10 +81,18 @@ void sle_measure_dis_client_task(void)
 
 static void measure_dis_entry(void)
 {
-    osal_printk("IMU_RANGE_BUILD multi-anchor-v1-1Hz-imu05-20Hz\r\n");
+    osal_printk("IMU_RANGE_BUILD multi-anchor-v2-window3-batch6\r\n");
     osal_task *task_handle = NULL;
     osal_kthread_lock();
 #if defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_SERVER)
+#if MEASURE_SERVER_SUFFIX == IMU_SERVER_SUFFIX
+    task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_imu_ack_task,
+                                      0, "SleImuAck", 0x1000);
+    if (task_handle != NULL) {
+        osal_kthread_set_priority(task_handle, 28);
+        osal_kfree(task_handle);
+    }
+#endif
     task_handle = osal_kthread_create((osal_kthread_handler)sle_measure_dis_server_task,
                                       0, "SLEMeasureDisServer", BTH_HADM_SERVICE_STACK_SIZE);
 #elif defined(CONFIG_SAMPLE_SUPPORT_SLE_MEASURE_DIS_CLIENT)

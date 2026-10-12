@@ -632,7 +632,8 @@ int measure_dis_client_init(void)
     measure_dis_protocol_stack_init(g_measure_dis_client_addr, measure_dis_name);
     measure_dis_reg_callbacks();
     ret = measure_dis_ssapc_register_cbks();
-    osal_printk("MULTI_ANCHOR_BUILD v1,anchors:05-09,range:1Hz,imu:05,20Hz/4\r\n");
+    osal_printk("MULTI_ANCHOR_BUILD v2,anchors:05-09,range:1Hz,imu:05,batch:%u,window:%u\r\n",
+        (unsigned int)SLE_IMU_BATCH_SAMPLES, (unsigned int)IMU_TX_WINDOW_SIZE);
     return ret;
 }
 /* 钥匙 */

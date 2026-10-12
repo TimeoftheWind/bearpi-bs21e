@@ -1,7 +1,8 @@
 # 暂定发行版状态与串口数据读取指南
 
 > 本新分支 `feat/multi-anchor-imu-telemetry` 是实验开发版，改为五锚点各 1 Hz 测距，
-> 20 Hz IMU 样本仅发送给地址末尾为 05 的 Server，目标发送 5 批/秒。
+> 20 Hz IMU 样本仅发送给地址末尾为 05 的 Server，v2 每批6样本、最多3批在途，
+> 目标约3.33个新批次/秒；ACK 代表已进入 Server RAM 队列，不代表电脑存盘。
 > 原稳定版 `feat/realtime-pdr-telemetry` 未改变。编译、地址和验收步骤见
 > [多锚点开发版说明](docs/MULTI_ANCHOR_IMU.md)。以下旧版状态描述保留作格式参考，
 > 不能作为新分支已经通过硬件验证的声明。

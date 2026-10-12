@@ -109,17 +109,67 @@ int main(void)
     }
     sle_imu_batch_t batch;
     assert(sample_batch(&batch));
-    assert(batch.samples[0].sequence == 4 && batch.samples[3].sequence == 7);
-    assert(batch.dropped_samples == 4 && g_sample_count == SLE_IMU_RING_CAPACITY - 4);
+    assert(batch.samples[0].sequence == 4 && batch.samples[SLE_IMU_BATCH_SAMPLES - 1].sequence == 9);
+    assert(batch.dropped_samples == 4 && g_sample_count == SLE_IMU_RING_CAPACITY - SLE_IMU_BATCH_SAMPLES);
+    g_window[0] = (imu_window_entry_t){ .batch = batch, .active = true, .sent = true };
     sle_imu_ack_t ack = {.sequence = batch.sequence,
-        .last_timestamp_us = batch.samples[3].timestamp_us + 1};
+        .last_timestamp_us = batch.samples[SLE_IMU_BATCH_SAMPLES - 1].timestamp_us + 1};
     sle_imu_tx_ack(&ack);
-    assert(!batch_acked(&batch));
+    assert(!g_window[0].acked);
     ack.last_timestamp_us--;
+    fake_us = 100;
     sle_imu_tx_ack(&ack);
-    assert(batch_acked(&batch));
-    assert(!batch_acked(&batch));
+    window_maintain(fake_us);
+    assert(!g_window[0].active && g_imu_acked == 1);
+    sle_imu_tx_ack(&ack); window_maintain(fake_us);
+    assert(g_imu_acked == 1); /* Duplicate ACK never double counts. */
+    window_fill(1000);
+    unsigned int remaining = g_sample_count;
+    for (unsigned int i = 0; i < IMU_TX_WINDOW_SIZE; i++) { assert(g_window[i].active); }
+    window_fill(1000); assert(g_sample_count == remaining); /* Bounded window. */
+    assert(window_next(1000) == 0);
+    g_window[0].sent = true; g_window[0].retry_us = 501000;
+    assert(window_next(1000) == 1); /* No stop-and-wait blockage. */
+    g_window[2].sent = true;
+    ack.sequence = g_window[2].batch.sequence;
+    ack.last_timestamp_us = g_window[2].batch.samples[SLE_IMU_BATCH_SAMPLES - 1].timestamp_us;
+    sle_imu_tx_ack(&ack); window_maintain(1000);
+    assert(!g_window[2].active && g_window[0].active && g_window[1].active);
+    window_fill(1000); assert(g_window[2].active);
+    assert(window_next(501000) == 0); /* Oldest timed-out batch is retried. */
+    window_maintain(1000 + IMU_BATCH_MAX_AGE_US + 1);
+    assert(g_imu_expired == IMU_TX_WINDOW_SIZE);
+    /* 30 seconds of 20 Hz input with 800 ms ACK delay (and retransmissions).
+     * Exercise actual window/ring helpers, then drain: no sample may be lost. */
+    memset(g_window, 0, sizeof(g_window));
+    g_sample_head = g_sample_count = g_dropped = 0;
+    g_batch_sequence = g_imu_acked = g_imu_expired = 0;
+    unsigned int generated = 0, submitted = 0;
+    for (fake_us = 10000; fake_us <= 33000000ULL; fake_us += 10000) {
+        if (fake_us <= 30000000ULL && fake_us % 50000ULL == 0) {
+            sample.sequence = generated++; sample.timestamp_us = fake_us; sample_push(&sample);
+        }
+        for (unsigned int i = 0; i < IMU_TX_WINDOW_SIZE; i++) {
+            imu_window_entry_t *entry = &g_window[i];
+            if (entry->active && entry->sent && fake_us - entry->first_send_us >= 800000ULL) {
+                ack.sequence = entry->batch.sequence;
+                ack.last_timestamp_us = entry->batch.samples[SLE_IMU_BATCH_SAMPLES - 1].timestamp_us;
+                sle_imu_tx_ack(&ack);
+            }
+        }
+        window_maintain(fake_us); window_fill(fake_us);
+        int index = window_next(fake_us);
+        if (index >= 0) {
+            imu_window_entry_t *entry = &g_window[index];
+            if (!entry->sent) { entry->first_send_us = fake_us; entry->sent = true; }
+            entry->retry_us = fake_us + IMU_ACK_TIMEOUT_US;
+            submitted++;
+        }
+        assert(g_dropped == 0 && g_imu_expired == 0);
+    }
+    assert(generated == 600 && g_imu_acked == 100 && g_sample_count == 0 && submitted > 100);
+    for (unsigned int i = 0; i < IMU_TX_WINDOW_SIZE; i++) { assert(!g_window[i].active); }
     assert(sizeof(sle_imu_batch_t) + sizeof(measure_ids_msg_t) <= sizeof(g_sle_tx_buf));
-    printf("PASS: address routing, reconnect generation, per-link IQ, bounds, queue overflow, sample ring, ACK identity\n");
+    printf("PASS: routing/IQ/ring, window/ACK/retry/expiry, 600 samples with simulated 800ms ACK delay\n");
     return 0;
 }

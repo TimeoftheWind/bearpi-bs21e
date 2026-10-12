@@ -12,7 +12,10 @@
 #define MEASURE_SERVER_SUFFIX 5U
 #endif
 #endif
-#define IMU_BATCH_SAMPLE_COUNT 4U /* 20 Hz sampling / 4 = target 5 batches/s */
+#define IMU_BATCH_SAMPLE_COUNT 6U /* 20 Hz / 6 = approximately 3.33 new batches/s */
+#define IMU_TX_WINDOW_SIZE 3U
+#define IMU_SERVER_DEDUP_SIZE 64U
+#define IMU_ACK_QUEUE_SIZE 16U
 #define IMU_SAMPLE_RING_SIZE 128U /* approximately 6.4 seconds, not unlimited storage */
 #define IQ_TX_QUEUE_SIZE 15U
 #define TELEMETRY_SEND_GUARD_US 10000ULL
